@@ -969,6 +969,7 @@ def get_noise_from_video(
         numpy_noises = [numpy_noise]
         numpy_flows = []
         vis_frames = []
+        down_video_frames = []
 
         try:
             for index, video_frame in enumerate(tqdm(video_frames[1:])):
@@ -1053,6 +1054,7 @@ def get_noise_from_video(
                             display_channel.update(visualization)
 
                         vis_frames.append(visualization)
+                        down_video_frames.append(down_video_frame)
 
         except KeyboardInterrupt:
             rp.fansi_print("Interrupted! Returning %i noises" % len(numpy_noises), "cyan", "bold")
@@ -1116,7 +1118,7 @@ def get_noise_from_video(
         
         rp.fansi_print(rp.get_file_name(__file__)+": Done warping noise, results are at " + rp.get_absolute_path(output_folder), "green", "bold")
 
-    return rp.gather_vars('numpy_noises numpy_flows vis_frames output_folder')
+    return rp.gather_vars('numpy_noises numpy_flows vis_frames down_video_frames output_folder')
 
 if __name__ == '__main__':
     fire.Fire(get_noise_from_video)
