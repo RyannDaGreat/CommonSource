@@ -977,7 +977,7 @@ def get_noise_from_video(
                 if not index % flow_accumulation_stride:
                     cum_flow = new_flow
                 else:
-                    cum_flow = rp.accumulate_flows(new_flow, cum_flow)
+                    cum_flow = rp.accumulate_flows(cum_flow, new_flow)
                 if not (index + 1) % flow_accumulation_stride:
 
                     dx, dy = cum_flow
@@ -1002,7 +1002,7 @@ def get_noise_from_video(
                             background_noise = np.random.randn(*numpy_noise.shape)
                         numpy_noise_alpha = alphas[index]
                         numpy_noise_alpha = rp.cv_resize_image(numpy_noise_alpha, numpy_noise.shape[:2])
-                        numpy_noise = blend_noise(background_noise, numpy_noise, numpy_noise_alpha[:,:,None])
+                        numpy_noise = blend_noise(background_noise, nu mpy_noise, numpy_noise_alpha[:,:,None])
                             
                     numpy_noises.append(numpy_noise)
 
