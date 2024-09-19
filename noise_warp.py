@@ -977,7 +977,7 @@ def get_noise_from_video(
                 if not index % flow_accumulation_stride:
                     cum_flow = new_flow
                 else:
-                    cum_flow = rp.accumulate_flow(cum_flow, new_flow)
+                    cum_flow = rp.accumulate_flows(cum_flow, new_flow)
                 if not (index + 1) % flow_accumulation_stride:
 
                     dx, dy = cum_flow
