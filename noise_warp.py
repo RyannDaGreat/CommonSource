@@ -275,7 +275,7 @@ def regaussianize(noise):
     assert output.shape == noise.shape == (c, hs, ws)
 
     return output, counts_image
-    
+
 def demo_noise_warp(Q=-6,scale_factor=1,num_frames=300):
     #Run this in a Jupyter notebook and watch the noise go brrrrrrr
 
@@ -727,14 +727,14 @@ def get_noise_from_video(
     resize_frames: tuple = None,
     resize_flow: int = 1,
     downscale_factor: int = 1,
-    device=None,
+    device = None,
     video_preprocessor = None,
-    save_files=True,
+    save_files = True,
     progressive_noise_alpha = 0,
     post_noise_alpha = 0,
-    remove_background=False,
-    warp_kwargs=dict(),
+    remove_background = False,
     flow_accumulation_stride = 1,
+    warp_kwargs = dict(),
 ):
     """
     Extract noise from a video by warping random noise using optical flow between consecutive frames.
@@ -973,86 +973,86 @@ def get_noise_from_video(
         try:
             for index, video_frame in enumerate(tqdm(video_frames[1:])):
             
-              new_flow = raft_model(prev_video_frame, video_frame)
-              if not index % flow_accumulation_stride:
-                  cum_flow = new_flow
-              else:
-                  cum_flow = rp.accumulate_flow(cum_flow, new_flow)
-              if not (index + 1) % flow_accumulation_stride:
+                new_flow = raft_model(prev_video_frame, video_frame)
+                if not index % flow_accumulation_stride:
+                    cum_flow = new_flow
+                else:
+                    cum_flow = rp.accumulate_flow(cum_flow, new_flow)
+                if not (index + 1) % flow_accumulation_stride:
 
-                dx, dy = cum_flow
+                    dx, dy = cum_flow
 
-                noise = warper(dx, dy).noise
-                prev_video_frame = video_frame
+                    noise = warper(dx, dy).noise
+                    prev_video_frame = video_frame
 
-                numpy_flow = np.stack(
-                    [
-                        rp.as_numpy_array(dx).astype(np.float16),
-                        rp.as_numpy_array(dy).astype(np.float16),
-                    ]
-                )
-                numpy_flows.append(numpy_flow)
+                    numpy_flow = np.stack(
+                        [
+                            rp.as_numpy_array(dx).astype(np.float16),
+                            rp.as_numpy_array(dy).astype(np.float16),
+                        ]
+                    )
+                    numpy_flows.append(numpy_flow)
 
-                down_noise = downscale_noise(noise)
+                    down_noise = downscale_noise(noise)
 
-                numpy_noise = rp.as_numpy_image(down_noise).astype(np.float16)
+                    numpy_noise = rp.as_numpy_image(down_noise).astype(np.float16)
 
-                if remove_background:
-                    if 'background_noise' not in dir():
-                        background_noise = np.random.randn(*numpy_noise.shape)
-                    numpy_noise_alpha = alphas[index]
-                    numpy_noise_alpha = rp.cv_resize_image(numpy_noise_alpha, numpy_noise.shape[:2])
-                    numpy_noise = blend_noise(background_noise, numpy_noise, numpy_noise_alpha[:,:,None])
-                        
-                numpy_noises.append(numpy_noise)
-
-                if visualize:
-                    flow_rgb = rp.optical_flow_to_image(dx, dy)
-
-                    #Turn the noise into a numpy HWC RGB array
-                    down_noise_image = np.zeros((*numpy_noise.shape[:2], 3))
-                    down_noise_image_c = min(noise_channels,3)
-                    down_noise_image[:,:,:down_noise_image_c]=numpy_noise[:,:,:down_noise_image_c]
-
-
-                    down_size = rp.get_image_dimensions(down_noise_image)
-                    down_video_frame, down_flow_rgb = rp.resize_images(video_frame, flow_rgb, size=down_size)
-
-                    optional_images = []
-                    optional_labels = []
                     if remove_background:
-                        alpha = alphas[index]
-                        down_alpha = rp.cv_resize_image(alpha, down_size)
+                        if 'background_noise' not in dir():
+                            background_noise = np.random.randn(*numpy_noise.shape)
+                        numpy_noise_alpha = alphas[index]
+                        numpy_noise_alpha = rp.cv_resize_image(numpy_noise_alpha, numpy_noise.shape[:2])
+                        numpy_noise = blend_noise(background_noise, numpy_noise, numpy_noise_alpha[:,:,None])
+                            
+                    numpy_noises.append(numpy_noise)
 
-                        optional_images.append(down_alpha)
-                        optional_labels.append('Alpha')
+                    if visualize:
+                        flow_rgb = rp.optical_flow_to_image(dx, dy)
 
-                        optional_images.append(rp.with_alpha_checkerboard(rp.with_image_alpha(down_video_frame,down_alpha)))
-                        optional_labels.append('RGBA')
+                        #Turn the noise into a numpy HWC RGB array
+                        down_noise_image = np.zeros((*numpy_noise.shape[:2], 3))
+                        down_noise_image_c = min(noise_channels,3)
+                        down_noise_image[:,:,:down_noise_image_c]=numpy_noise[:,:,:down_noise_image_c]
 
-                    visualization = rp.as_byte_image(
-                        rp.tiled_images(
-                            rp.labeled_images(
-                                [
-                                    down_noise_image / 3 + 0.5,
-                                    down_video_frame,
-                                    down_flow_rgb,
-                                    down_noise_image / 5 + down_video_frame,
-                                ] + optional_images,
-                                [
-                                    "Warped Noise",
-                                    "Input Video",
-                                    "Optical Flow",
-                                    "Overlaid",
-                                ] + optional_labels,
+
+                        down_size = rp.get_image_dimensions(down_noise_image)
+                        down_video_frame, down_flow_rgb = rp.resize_images(video_frame, flow_rgb, size=down_size)
+
+                        optional_images = []
+                        optional_labels = []
+                        if remove_background:
+                            alpha = alphas[index]
+                            down_alpha = rp.cv_resize_image(alpha, down_size)
+
+                            optional_images.append(down_alpha)
+                            optional_labels.append('Alpha')
+
+                            optional_images.append(rp.with_alpha_checkerboard(rp.with_image_alpha(down_video_frame,down_alpha)))
+                            optional_labels.append('RGBA')
+
+                        visualization = rp.as_byte_image(
+                            rp.tiled_images(
+                                rp.labeled_images(
+                                    [
+                                        down_noise_image / 3 + 0.5,
+                                        down_video_frame,
+                                        down_flow_rgb,
+                                        down_noise_image / 5 + down_video_frame,
+                                    ] + optional_images,
+                                    [
+                                        "Warped Noise",
+                                        "Input Video",
+                                        "Optical Flow",
+                                        "Overlaid",
+                                    ] + optional_labels,
+                                )
                             )
                         )
-                    )
 
-                    if rp.running_in_jupyter_notebook():
-                        display_channel.update(visualization)
+                        if rp.running_in_jupyter_notebook():
+                            display_channel.update(visualization)
 
-                    vis_frames.append(visualization)
+                        vis_frames.append(visualization)
 
         except KeyboardInterrupt:
             rp.fansi_print("Interrupted! Returning %i noises" % len(numpy_noises), "cyan", "bold")
