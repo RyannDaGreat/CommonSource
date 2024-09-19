@@ -1002,7 +1002,7 @@ def get_noise_from_video(
                             background_noise = np.random.randn(*numpy_noise.shape)
                         numpy_noise_alpha = alphas[index]
                         numpy_noise_alpha = rp.cv_resize_image(numpy_noise_alpha, numpy_noise.shape[:2])
-                        numpy_noise = blend_noise(background_noise, nu mpy_noise, numpy_noise_alpha[:,:,None])
+                        numpy_noise = blend_noise(background_noise, numpy_noise, numpy_noise_alpha[:,:,None])
                             
                     numpy_noises.append(numpy_noise)
 
