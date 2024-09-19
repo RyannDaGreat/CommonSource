@@ -734,6 +734,7 @@ def get_noise_from_video(
     post_noise_alpha = 0,
     remove_background=False,
     warp_kwargs=dict(),
+    flow_accumulation_stride = 1,
 ):
     """
     Extract noise from a video by warping random noise using optical flow between consecutive frames.
@@ -971,8 +972,16 @@ def get_noise_from_video(
 
         try:
             for index, video_frame in enumerate(tqdm(video_frames[1:])):
+            
+              new_flow = raft_model(prev_video_frame, video_frame)
+              if not index % flow_accumulation_stride:
+                  cum_flow = new_flow
+              else:
+                  cum_flow = rp.accumulate_flow(cum_flow, new_flow)
+              if not (index + 1) % flow_accumulation_stride:
 
-                dx, dy = raft_model(prev_video_frame, video_frame)
+                dx, dy = cum_flow
+
                 noise = warper(dx, dy).noise
                 prev_video_frame = video_frame
 
