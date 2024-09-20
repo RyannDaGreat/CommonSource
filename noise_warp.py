@@ -977,14 +977,18 @@ def get_noise_from_video(
         down_frames = []
 
         try:
+            accumulated_flows = []
+
             for index, video_frame in enumerate(tqdm(video_frames[1:])):
             
                 new_flow = raft_model(prev_video_frame, video_frame)
-                if not index % flow_accumulation_stride:
-                    cum_flow = new_flow
-                else:
-                    cum_flow = rp.accumulate_flows(cum_flow, new_flow)
+                accumulated_flows.append(new_flow)
+
                 if not (index + 1) % flow_accumulation_stride:
+
+                    #See rp.accumulate_flows's docstring examples for why we need the negations and reverses
+                    cum_flow = -rp.accumulate_flows([-x for x in accumulated_flows][::-1])
+                    accumulated_flows.clear()
 
                     dx, dy = cum_flow
 
