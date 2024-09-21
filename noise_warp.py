@@ -733,7 +733,6 @@ def get_noise_from_video(
     progressive_noise_alpha = 0,
     post_noise_alpha = 0,
     remove_background = False,
-    flow_accumulation_stride = 1,
     warp_kwargs = dict(),
 ):
     """
@@ -981,13 +980,22 @@ def get_noise_from_video(
 
             for index, video_frame in enumerate(tqdm(video_frames[1:])):
             
-                new_flow = raft_model(prev_video_frame, video_frame)
+                flow_accumulation_stride = 1 #TODO: This option doesn't work correctly because as we increase stride the flow becomes less bijective, and our noise warping uses both scattere_add and remap functions.
+                                             #The best way to use flow_accumulation_stride is to use both USE_REVERSE_FLOW as True and USE_REVERSE_FLOW as False in different parts of the noise warp calculations
+                                             #In fact, this will benefit the noise warp even when flow_accumulation_stride = 1
+                                             #However that will also make it 2x as slow, so I'm not doing that right now
+                USE_REVERSE_FLOW = False #Use optical flow from next frame to prev frame instead of the default. Both work if handled correctly.
+
+                if USE_REVERSE_FLOW: new_flow =  raft_model(video_frame     , prev_video_frame)
+                else               : new_flow = -raft_model(prev_video_frame,      video_frame)
+
                 accumulated_flows.append(new_flow)
 
                 if not (index + 1) % flow_accumulation_stride:
 
                     #See rp.accumulate_flows's docstring examples for why we need the negations and reverses
-                    cum_flow = -rp.accumulate_flows([-x for x in accumulated_flows][::-1])
+                    if USE_REVERSE_FLOW: cum_flow = -rp.accumulate_flows(accumulated_flows      )
+                    else               : cum_flow = -rp.accumulate_flows(accumulated_flows[::-1])
                     accumulated_flows.clear()
 
                     dx, dy = cum_flow
