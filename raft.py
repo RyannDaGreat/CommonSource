@@ -1,13 +1,11 @@
 import rp
-import torch
-import torchvision.transforms
-from torchvision.models.optical_flow import raft_large, raft_small
 
 class RaftOpticalFlow(rp.CachedInstances):
     def __init__(self, device, version='large'):
         """
         Automatically downloads the model you select upon instantiation if not already downloaded
         """
+        from torchvision.models.optical_flow import raft_large, raft_small
 
         models = {
             'large' : raft_large,
@@ -63,6 +61,9 @@ class RaftOpticalFlow(rp.CachedInstances):
             from_image: Can be an image as defined by rp.is_image, or an RGB torch image (a 3HW torch tensor)
             to_image  : Can be an image as defined by rp.is_image, or an RGB torch image (a 3HW torch tensor)
         """
+        import torch
+        import torchvision.transforms
+
         assert rp.is_image(from_image)
         assert rp.is_image(to_image)
         assert rp.get_image_dimensions(from_image) == rp.get_image_dimensions(to_image)
