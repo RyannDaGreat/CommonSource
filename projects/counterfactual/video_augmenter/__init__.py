@@ -22,7 +22,7 @@ class Quadrilateral:
         self.min_x, self.min_y = min_coords
         self.max_x, self.max_y = max_coords
 
-        self.center = np.rp.mean(self.points, axis=0)
+        self.center = np.mean(self.points, axis=0)
         self.mean_x, self.mean_y = self.center
 
         self.bounds = np.array([[self.min_x, self.max_x], [self.min_y, self.max_y]])
