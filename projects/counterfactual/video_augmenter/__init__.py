@@ -1,4 +1,4 @@
-from rp import mean
+import rp
 import math
 import numpy as np
 
@@ -22,7 +22,7 @@ class Quadrilateral:
         self.min_x, self.min_y = min_coords
         self.max_x, self.max_y = max_coords
 
-        self.center = np.mean(self.points, axis=0)
+        self.center = np.rp.mean(self.points, axis=0)
         self.mean_x, self.mean_y = self.center
 
         self.bounds = np.array([[self.min_x, self.max_x], [self.min_y, self.max_y]])
@@ -118,7 +118,7 @@ class Quadrilateral:
 def get_random_bounds(big_shape, small_shape):
     bounds = []
     for img_dim, crop_dim in zip(big_shape, small_shape):
-        start = random_float(0, img_dim - crop_dim)
+        start = rp.random_float(0, img_dim - crop_dim)
         end = start + crop_dim
         bounds.append([start, end])
     return np.asarray(bounds)
@@ -133,9 +133,9 @@ def get_random_quads(T=49, VH=480, VW=720):
 
     min_scale = 0.25
 
-    random_scale = lambda: 1 - (1 - min_scale) * random_float() ** 2
+    random_scale = lambda: 1 - (1 - min_scale) * rp.random_float() ** 2
 
-    random_angle = lambda: random_float(min_rot, max_rot) * rp.random_float() ** 2
+    random_angle = lambda: rp.random_float(min_rot, max_rot) * rp.rp.random_float() ** 2
 
     while True:
         angle_a = random_angle()
@@ -171,8 +171,8 @@ def get_random_quads(T=49, VH=480, VW=720):
 
 
 def quads_to_image(quads, VH, VW):
-    preview_image = cv_draw_contours(
-        as_byte_image(uniform_float_color_image(VH, VW)),
+    preview_image = rp.cv_draw_contours(
+        rp.as_byte_image(rp.uniform_float_color_image(VH, VW)),
         [quad.points for quad in quads],
     )
     return preview_image
@@ -181,7 +181,7 @@ def quads_to_image(quads, VH, VW):
 def demo_get_random_quads():
     quads = get_random_quads()
     preview_image = quads_to_image(quads, 480, 720)
-    display_image(preview_image)
+    rp.display_image(preview_image)
     return preview_image
 
 
@@ -194,11 +194,11 @@ def augment_video(video, quads=None):
 
     frames = []
     for frame, quad in zip(video, quads):
-        frame = unwarped_perspective_image(frame, quad.points)
+        frame = rp.unwarped_perspective_image(frame, quad.points)
         frames.append(frame)
-    video = as_numpy_array(frames)
+    video = rp.as_numpy_array(frames)
 
-    return gather_vars("video quads")
+    return rp.gather_vars("video quads")
 
 
 def augment_videos(videos, quads=None):
@@ -214,10 +214,10 @@ def augment_videos(videos, quads=None):
 def demo_augment_video():
     """See https://www.youtube.com/watch?v=Yi0MagvU86w"""
     T, VH, VW = 49, 480, 720
-    old_video = resize_list(
-        resize_images(
-            load_video(
-                download_to_cache(
+    old_video = rp.resize_list(
+        rp.resize_images(
+            rp.load_video(
+                rp.download_to_cache(
                     # "https://videos.pexels.com/video-files/29081059/12567546_1920_1080_50fps.mp4"
                     "https://video-previews.elements.envatousercontent.com/77b2d7c5-a902-4389-afdd-5b8c9b6285fb/watermarked_preview/watermarked_preview.mp4"
                 ),
@@ -233,35 +233,35 @@ def demo_augment_video():
     quads = augmentation.quads
 
     old_video = [
-        cv_draw_contour(frame, quad.points, color="blue")
+        rp.cv_draw_contour(frame, quad.points, color="blue")
         for frame, quad in zip(old_video, quads)
     ]
 
-    arrow = load_image(
+    arrow = rp.load_image(
         "https://cdn-icons-png.flaticon.com/512/3031/3031716.png", use_cache=True
     )
-    arrow = get_alpha_channel(arrow)
-    arrow = resize_image_to_fit(arrow, width=VH // 3)
-    arrow = crop_image(arrow, height=VH, origin="center")
+    arrow = rp.get_alpha_channel(arrow)
+    arrow = rp.resize_image_to_fit(arrow, width=VH // 3)
+    arrow = rp.crop_image(arrow, height=VH, origin="center")
 
-    preview_video = horizontally_concatenated_videos(
+    preview_video = rp.horizontally_concatenated_videos(
         old_video, [arrow], new_video, [quads_to_image(quads, VH, VW)]
     )
 
-    preview_video = video_with_progress_bar(
+    preview_video = rp.video_with_progress_bar(
         preview_video, bar_color="green", position="bottom"
     )
-    preview_video = labeled_images(
+    preview_video = rp.labeled_images(
         preview_video, "Augmentation Preview", font="Futura", size=45
     )
 
     save_path = "demo_augment_video.mp4"
-    save_path = get_unique_copy_path(save_path)
+    save_path = rp.get_unique_copy_path(save_path)
 
-    save_video_mp4(preview_video, save_path, show_progress=False)
-    fansi_print(f"Saved {save_path}", "bold green green italic on black black")
+    rp.save_video_mp4(preview_video, save_path, show_progress=False)
+    rp.fansi_print(f"Saved {save_path}", "bold green green italic on black black")
 
-    display_video(
+    rp.display_video(
         preview_video,
         loop=False,
     )
