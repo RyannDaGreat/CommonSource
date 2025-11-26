@@ -111,7 +111,8 @@ class Quadrilateral:
         return Quadrilateral.from_points(new_points)
 
     def __repr__(self):
-        return f'Quadrilateral({str(self.points).replace("\n","")})'
+        points_str = str(self.points).replace("\n", "")
+        return f'Quadrilateral({points_str})'
 
 
 def get_random_bounds(big_shape, small_shape):
