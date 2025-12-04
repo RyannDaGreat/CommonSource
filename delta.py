@@ -375,6 +375,30 @@ def _load_video(video, num_frames: Optional[int] = None) -> np.ndarray:
     return video
 
 
+def _sample_bilinear(data: np.ndarray, points: np.ndarray) -> np.ndarray:
+    """
+    Sample data at points using bilinear interpolation.
+
+    Args:
+        data: Array of shape (T, H, W) or (T, H, W, C)
+        points: (N, 2) array of (x, y) coordinates
+
+    Returns:
+        Array of shape (T, N) or (T, N, C)
+    """
+    x = points[:, 0]
+    y = points[:, 1]
+    H, W = data.shape[1], data.shape[2]
+
+    X, Y, W_coeffs = rp.get_bilinear_weights(x, y)  # each is (4, N)
+    X = X.astype(int).clip(0, W - 1)
+    Y = Y.astype(int).clip(0, H - 1)
+
+    # Sample 4 corners and weight them
+    result = sum(W_coeffs[i] * data[:, Y[i], X[i]] for i in range(4))
+    return result
+
+
 def _video_to_tensor(video: np.ndarray, device: torch.device) -> torch.Tensor:
     """
     Convert video numpy array to tensor for model input.
@@ -561,53 +585,20 @@ def track_video_sparse_2d(
 
     # Sample at query points using bilinear interpolation
     # Map points to dense grid coordinates
-    scale_y, scale_x = H_d / H, W_d / W
+    scale_x, scale_y = W_d / W, H_d / H
     query_pts_scaled = points * np.array([scale_x, scale_y])
 
-    coords_out = np.zeros((T, N, 2), dtype=np.float32)
-    vis_out = np.zeros((T, N), dtype=bool)
-    conf_out = np.zeros((T, N), dtype=np.float32)
+    # Sample coords, conf with bilinear; vis with nearest neighbor
+    coords_out = _sample_bilinear(coords_dense, query_pts_scaled)
+    conf_out = _sample_bilinear(conf_dense, query_pts_scaled)
 
-    for i, (qx, qy) in enumerate(query_pts_scaled):
-        # Bilinear interpolation
-        x0, y0 = int(qx), int(qy)
-        x1, y1 = min(x0 + 1, W_d - 1), min(y0 + 1, H_d - 1)
-        x0, y0 = max(0, x0), max(0, y0)
+    # Visibility: nearest neighbor (round to int indices)
+    pts_rounded = np.round(query_pts_scaled).astype(int)
+    pts_rounded[:, 0] = pts_rounded[:, 0].clip(0, W_d - 1)
+    pts_rounded[:, 1] = pts_rounded[:, 1].clip(0, H_d - 1)
+    vis_out = vis_dense[:, pts_rounded[:, 1], pts_rounded[:, 0]]
 
-        wx = qx - x0
-        wy = qy - y0
-
-        for t in range(T):
-            # Interpolate coordinates
-            c00 = coords_dense[t, y0, x0]
-            c01 = coords_dense[t, y0, x1]
-            c10 = coords_dense[t, y1, x0]
-            c11 = coords_dense[t, y1, x1]
-
-            coords_out[t, i] = (
-                c00 * (1 - wx) * (1 - wy) +
-                c01 * wx * (1 - wy) +
-                c10 * (1 - wx) * wy +
-                c11 * wx * wy
-            )
-
-            # Interpolate confidence
-            conf_out[t, i] = (
-                conf_dense[t, y0, x0] * (1 - wx) * (1 - wy) +
-                conf_dense[t, y0, x1] * wx * (1 - wy) +
-                conf_dense[t, y1, x0] * (1 - wx) * wy +
-                conf_dense[t, y1, x1] * wx * wy
-            )
-
-            # Visibility: use nearest neighbor
-            vis_out[t, i] = vis_dense[t, round(qy), round(qx)]
-
-    # Scale coordinates back to original resolution
-    scale_back_x, scale_back_y = W / W_d, H / H_d
-    # Actually the coords are already in original space since model scales them
-    # Just return as-is
-
-    return coords_out, vis_out, conf_out
+    return coords_out.astype(np.float32), vis_out.astype(bool), conf_out.astype(np.float32)
 
 
 def track_video_dense_3d(
@@ -781,84 +772,31 @@ def track_video_sparse_3d(
     N = len(points)
 
     # Map points to dense grid coordinates
-    scale_y, scale_x = H_d / H, W_d / W
+    scale_x, scale_y = W_d / W, H_d / H
     query_pts_scaled = points * np.array([scale_x, scale_y])
 
-    # Sample results at query points
-    coords_2d_out = np.zeros((T, N, 2), dtype=np.float32)
-    depth_out = np.zeros((T, N), dtype=np.float32)
-    vis_out = np.zeros((T, N), dtype=bool)
-    conf_out = np.zeros((T, N), dtype=np.float32)
+    # Sample with bilinear interpolation
+    coords_2d_out = _sample_bilinear(result["coords_2d"], query_pts_scaled)
+    depth_out = _sample_bilinear(result["depth"], query_pts_scaled)
+    conf_out = _sample_bilinear(result["confidence"], query_pts_scaled)
 
-    for i, (qx, qy) in enumerate(query_pts_scaled):
-        x0, y0 = int(qx), int(qy)
-        x1, y1 = min(x0 + 1, W_d - 1), min(y0 + 1, H_d - 1)
-        x0, y0 = max(0, x0), max(0, y0)
-
-        wx = qx - x0
-        wy = qy - y0
-
-        for t in range(T):
-            # Bilinear interpolation
-            c00 = result["coords_2d"][t, y0, x0]
-            c01 = result["coords_2d"][t, y0, x1]
-            c10 = result["coords_2d"][t, y1, x0]
-            c11 = result["coords_2d"][t, y1, x1]
-
-            coords_2d_out[t, i] = (
-                c00 * (1 - wx) * (1 - wy) +
-                c01 * wx * (1 - wy) +
-                c10 * (1 - wx) * wy +
-                c11 * wx * wy
-            )
-
-            depth_out[t, i] = (
-                result["depth"][t, y0, x0] * (1 - wx) * (1 - wy) +
-                result["depth"][t, y0, x1] * wx * (1 - wy) +
-                result["depth"][t, y1, x0] * (1 - wx) * wy +
-                result["depth"][t, y1, x1] * wx * wy
-            )
-
-            conf_out[t, i] = (
-                result["confidence"][t, y0, x0] * (1 - wx) * (1 - wy) +
-                result["confidence"][t, y0, x1] * wx * (1 - wy) +
-                result["confidence"][t, y1, x0] * (1 - wx) * wy +
-                result["confidence"][t, y1, x1] * wx * wy
-            )
-
-            vis_out[t, i] = result["visibility"][t, round(qy), round(qx)]
+    # Visibility: nearest neighbor
+    pts_rounded = np.round(query_pts_scaled).astype(int)
+    pts_rounded[:, 0] = pts_rounded[:, 0].clip(0, W_d - 1)
+    pts_rounded[:, 1] = pts_rounded[:, 1].clip(0, H_d - 1)
+    vis_out = result["visibility"][:, pts_rounded[:, 1], pts_rounded[:, 0]]
 
     output = {
-        "coords_2d": coords_2d_out,
-        "depth": depth_out,
-        "visibility": vis_out,
-        "confidence": conf_out,
+        "coords_2d": coords_2d_out.astype(np.float32),
+        "depth": depth_out.astype(np.float32),
+        "visibility": vis_out.astype(bool),
+        "confidence": conf_out.astype(np.float32),
         "query_points": points,
     }
 
     # Handle 3D coordinates if available
     if result["coords_3d"] is not None:
-        coords_3d_out = np.zeros((T, N, 3), dtype=np.float32)
-        for i, (qx, qy) in enumerate(query_pts_scaled):
-            x0, y0 = int(qx), int(qy)
-            x1, y1 = min(x0 + 1, W_d - 1), min(y0 + 1, H_d - 1)
-            x0, y0 = max(0, x0), max(0, y0)
-            wx = qx - x0
-            wy = qy - y0
-
-            for t in range(T):
-                c00 = result["coords_3d"][t, y0, x0]
-                c01 = result["coords_3d"][t, y0, x1]
-                c10 = result["coords_3d"][t, y1, x0]
-                c11 = result["coords_3d"][t, y1, x1]
-
-                coords_3d_out[t, i] = (
-                    c00 * (1 - wx) * (1 - wy) +
-                    c01 * wx * (1 - wy) +
-                    c10 * (1 - wx) * wy +
-                    c11 * wx * wy
-                )
-        output["coords_3d"] = coords_3d_out
+        output["coords_3d"] = _sample_bilinear(result["coords_3d"], query_pts_scaled).astype(np.float32)
 
     return output
 
