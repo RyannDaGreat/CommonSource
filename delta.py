@@ -3,6 +3,12 @@
 """
 DELTA: Dense Efficient Long-range 3D Tracking for Any video (ICLR 2025)
 
+Platform Support:
+    - CUDA: ✅ Full support
+    - MPS (Apple Silicon): ❌ BROKEN - conv2d >65536 channels limit (Dec 2025)
+      Auto-fallback to CPU when MPS detected.
+    - CPU: ✅ Full support (used on Mac, slower)
+
 This module provides simple functions to work with Snap Research's DELTA model,
 which performs dense point tracking across video sequences in both 2D and 3D.
 
@@ -98,10 +104,15 @@ def _default_delta_device():
     """
     Get or initialize the default device for DELTA model.
     Uses rp.select_torch_device() to pick the best available device.
+    Note: MPS is not supported (conv2d >65536 channels limit), falls back to CPU.
     """
     global _delta_device
     if _delta_device is None:
         _delta_device = rp.select_torch_device(reserve=True)
+        # DELTA doesn't work on MPS due to conv2d channel limits
+        if 'mps' in str(_delta_device):
+            print("DELTA: MPS not supported (conv2d channel limit), using CPU")
+            _delta_device = 'cpu'
     return _delta_device
 
 
@@ -323,6 +334,10 @@ def _get_delta_2d(model_path: Optional[str] = None, device=None):
         device = _default_delta_device()
     else:
         global _delta_device
+        # Force CPU for MPS due to conv2d channel limit
+        if 'mps' in str(device):
+            print("DELTA: MPS not supported (conv2d channel limit), using CPU")
+            device = 'cpu'
         _delta_device = device
     device = torch.device(device)
 
@@ -345,6 +360,10 @@ def _get_delta_3d(model_path: Optional[str] = None, device=None):
         device = _default_delta_device()
     else:
         global _delta_device
+        # Force CPU for MPS due to conv2d channel limit
+        if 'mps' in str(device):
+            print("DELTA: MPS not supported (conv2d channel limit), using CPU")
+            device = 'cpu'
         _delta_device = device
     device = torch.device(device)
 

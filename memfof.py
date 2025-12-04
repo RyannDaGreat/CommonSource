@@ -3,12 +3,18 @@
 """
 MEMFOF: Multi-frame optical flow model
 
+Platform Support:
+    - CUDA: ✅ Full support
+    - MPS (Apple Silicon): ✅ Full support (tested Dec 2025)
+    - CPU: ✅ Full support (slow)
+
 This module wraps the MEMFOF optical flow model, which processes exactly 3 frames
 at a time for improved accuracy compared to 2-frame methods like RAFT.
 
 Usage:
     from rp.git.CommonSource.memfof import MemfofOpticalFlow
-    flow_model = MemfofOpticalFlow('cuda:0')
+    flow_model = MemfofOpticalFlow()  # Auto-selects best device (MPS on Mac)
+    flow_model = MemfofOpticalFlow(device='mps')  # Or specify device explicitly
     backward_flow, forward_flow = flow_model(frame0, frame1, frame2)
 
 See: https://github.com/msu-video-group/memfof
@@ -30,9 +36,13 @@ PIP_REQUIREMENTS = [
 
 
 class MemfofOpticalFlow(rp.CachedInstances):
-    def __init__(self, device, version='MEMFOF-Tartan-T-TSKH'):
+    def __init__(self, device=None, version='MEMFOF-Tartan-T-TSKH'):
         """
         MEMFOF: Multi-frame optical flow that processes exactly 3 frames at a time.
+
+        Args:
+            device: Device to run on. If None, auto-selects best available (MPS on Mac, CUDA otherwise).
+            version: Model variant to use
 
         Available versions:
         - 'MEMFOF-Tartan-T-TSKH' (default, best for real-world videos)
@@ -40,6 +50,9 @@ class MemfofOpticalFlow(rp.CachedInstances):
         - 'MEMFOF-Tartan-T-TSKH-sintel' (fine-tuned on Sintel dataset)
         - 'MEMFOF-Tartan-T-TSKH-spring' (fine-tuned on Spring dataset)
         """
+
+        if device is None:
+            device = rp.select_torch_device(reserve=True)
 
         # Install memfof package if not available
         try:

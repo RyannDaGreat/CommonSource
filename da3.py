@@ -3,6 +3,12 @@
 """
 Depth Anything 3: State-of-the-art monocular and multi-view depth estimation (late 2025)
 
+Platform Support:
+    - CUDA: ✅ Full support (with optional xformers)
+    - MPS (Apple Silicon): ⚠️ UNTESTED - model may use xformers/flash_attn (Dec 2025)
+      Note: Depth Anything V2 (transformers version) DOES work on MPS
+    - CPU: ✅ Full support (slow)
+
 This module provides simple functions to work with ByteDance's Depth Anything 3 model,
 which handles both images and videos for:
 - Monocular depth estimation (single image -> depth map)

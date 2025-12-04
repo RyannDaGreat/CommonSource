@@ -1,7 +1,12 @@
 """
 Sa2VA: State-of-the-art vision-language model for image/video understanding (early 2025)
 
-This module provides simple functions to work with ByteDance's Sa2VA-4B model, 
+Platform Support:
+    - CUDA: ✅ Full support (requires flash_attn)
+    - MPS (Apple Silicon): ❌ BROKEN - requires flash_attn which is CUDA-only (Dec 2025)
+    - CPU: ❌ BROKEN - requires flash_attn which is CUDA-only
+
+This module provides simple functions to work with ByteDance's Sa2VA-4B model,
 which handles both images and videos for:
 - Image and video captioning
 - Visual question answering 

@@ -1,11 +1,37 @@
+"""
+RAFT Optical Flow - Torchvision implementation wrapper
+
+Platform Support:
+    - CUDA: ✅ Full support
+    - MPS (Apple Silicon): ❌ BROKEN - produces incorrect results (tested Dec 2025)
+      Known issue: RAFT uses grid_sample operations that produce NaN/garbage on MPS
+    - CPU: ✅ Full support (use this on Mac, slower but correct)
+
+Usage:
+    flow_model = RaftOpticalFlow()  # Auto-selects best device
+    flow_model = RaftOpticalFlow(device='cpu', version='small')  # Use CPU on Mac!
+    flow = flow_model(image1, image2)  # Returns 2HW tensor of (dx, dy)
+"""
 import rp
 
 class RaftOpticalFlow(rp.CachedInstances):
-    def __init__(self, device, version='large'):
+    def __init__(self, device=None, version='large'):
         """
-        Automatically downloads the model you select upon instantiation if not already downloaded
+        Automatically downloads the model you select upon instantiation if not already downloaded.
+
+        Args:
+            device: Device to run on. If None, auto-selects best available (MPS on Mac, CUDA otherwise).
+            version: 'large' or 'small' - small is faster, large is more accurate
         """
+        import torch
         from torchvision.models.optical_flow import raft_large, raft_small
+
+        if device is None:
+            device = rp.select_torch_device(reserve=True)
+            # RAFT is broken on MPS - force CPU fallback
+            if 'mps' in str(device):
+                print("WARNING: RAFT produces incorrect results on MPS. Using CPU instead.")
+                device = 'cpu'
 
         models = {
             'large' : raft_large,

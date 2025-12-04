@@ -3,6 +3,11 @@
 """
 Video-Depth-Anything: Consistent depth estimation for super-long videos (CVPR 2025 Highlight)
 
+Platform Support:
+    - CUDA: ✅ Full support (with xformers for best performance)
+    - MPS (Apple Silicon): ✅ Full support (tested Dec 2025, uses fallback attention without xformers)
+    - CPU: ✅ Full support (slow)
+
 This module provides simple functions to work with ByteDance's Video-Depth-Anything models,
 which perform temporally consistent monocular depth estimation on videos.
 

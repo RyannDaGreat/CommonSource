@@ -3,6 +3,11 @@
 """
 FlashDepth: Real-time streaming video depth estimation at 2K resolution (ICCV 2025 Highlight)
 
+Platform Support:
+    - CUDA: ✅ Full support (requires flash_attn)
+    - MPS (Apple Silicon): ❌ BROKEN - requires flash_attn which is CUDA-only (Dec 2025)
+    - CPU: ❌ BROKEN - requires flash_attn which is CUDA-only
+
 This module provides simple functions to work with Eyeline-Labs' FlashDepth models,
 which perform real-time depth estimation on video streams with temporal consistency.
 
