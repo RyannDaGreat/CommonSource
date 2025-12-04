@@ -42,6 +42,20 @@ __all__ = [
     "default_model_path",
 ]
 
+PIP_REQUIREMENTS = [
+    "torch",
+    "diffusers>=0.35.2",
+    "transformers>=4.57.1",
+    "accelerate>=1.8.1",
+    "peft>=0.17.1",
+    "huggingface_hub>=0.35.3",
+    "numpy>=1.26.4",
+    "einops>=0.8.1",
+    "sentencepiece>=0.2.0",
+    "imageio>=2.37.0",
+    "imageio-ffmpeg>=0.6.0",
+]
+
 # Default paths - network drive location and HuggingFace fallback
 default_model_path = "/root/CleanCode/Github/ChronoEdit/checkpoints/ChronoEdit-14B-Diffusers"
 huggingface_model_id = "nvidia/ChronoEdit-14B-Diffusers"

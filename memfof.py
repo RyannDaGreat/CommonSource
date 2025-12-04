@@ -1,9 +1,33 @@
-# Added December 3, 2025 by Clara Burgert using Claude
+# Added December 3, 2025 by Ryan Burgert using Claude
+
+"""
+MEMFOF: Multi-frame optical flow model
+
+This module wraps the MEMFOF optical flow model, which processes exactly 3 frames
+at a time for improved accuracy compared to 2-frame methods like RAFT.
+
+Usage:
+    from rp.git.CommonSource.memfof import MemfofOpticalFlow
+    flow_model = MemfofOpticalFlow('cuda:0')
+    backward_flow, forward_flow = flow_model(frame0, frame1, frame2)
+
+See: https://github.com/msu-video-group/memfof
+"""
 
 import rp
 import torch
 import torchvision.transforms
 import numpy as np
+
+__all__ = ["MemfofOpticalFlow"]
+
+PIP_REQUIREMENTS = [
+    "torch",
+    "torchvision",
+    "numpy",
+    "memfof",  # pip install git+https://github.com/msu-video-group/memfof
+]
+
 
 class MemfofOpticalFlow(rp.CachedInstances):
     def __init__(self, device, version='MEMFOF-Tartan-T-TSKH'):

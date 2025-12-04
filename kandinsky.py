@@ -50,6 +50,24 @@ __all__ = [
     "DEFAULT_LOCAL_CACHE",
 ]
 
+PIP_REQUIREMENTS = [
+    "torch==2.8.0",
+    "torchvision",
+    "transformers>=4.56.2",
+    "diffusers",
+    "accelerate",
+    "einops",
+    "numpy",
+    "pillow",
+    "omegaconf",
+    "safetensors",
+    "sentencepiece",
+    "imageio",
+    "imageio-ffmpeg",
+    "opencv-python",
+    "peft",
+]
+
 # Default paths
 DEFAULT_MODEL_PATH = "/root/CleanCode/Github/kandinsky-5/weights"
 DEFAULT_LOCAL_CACHE = "/models/kandinsky5"

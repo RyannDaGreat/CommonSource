@@ -51,6 +51,22 @@ __all__ = [
     "get_model_path",
 ]
 
+PIP_REQUIREMENTS = [
+    "torch>=2",
+    "torchvision",
+    "einops",
+    "timm",
+    "safetensors",
+    "huggingface_hub",
+    "omegaconf",
+    "opencv-python",
+    "imageio",
+    "plyfile",
+    "trimesh",
+    "numpy<2",
+    "moviepy==1.0.3",
+]
+
 
 # Model variants and their HuggingFace paths
 MODEL_VARIANTS = {
