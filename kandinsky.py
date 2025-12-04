@@ -129,8 +129,8 @@ def _disable_warnings():
             guards=False,
             recompiles=False
         )
-    except:
-        pass
+    except Exception:
+        pass  # May not exist in older torch versions
 
 
 def _ensure_kandinsky_installed():

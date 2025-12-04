@@ -256,7 +256,7 @@ def _ensure_da3_package():
     # Try to import xformers (optional, for faster attention)
     try:
         rp.pip_import("xformers", auto_yes=True)
-    except:
+    except Exception:
         print("xformers not available, will use standard attention")
 
     # Install the package from GitHub without dependencies (we've handled them above)
@@ -275,7 +275,7 @@ def _ensure_da3_package():
     try:
         rp.pip_import("evo", auto_yes=True)  # For camera pose evaluation
         rp.pip_import("pycolmap", auto_yes=True)  # For COLMAP export
-    except:
+    except Exception:
         pass  # These are optional
 
     # Clear import cache
@@ -630,8 +630,8 @@ def demo(image=None, output="/tmp/da3_demo.jpg", device=None, variant="small"):
 
     try:
         rp.display_image(comparison)
-    except:
-        pass
+    except Exception:
+        pass  # May fail in headless environments
 
     return depth
 

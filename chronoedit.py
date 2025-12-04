@@ -49,7 +49,7 @@ PIP_REQUIREMENTS = [
     "accelerate>=1.8.1",
     "peft>=0.17.1",
     "huggingface_hub>=0.35.3",
-    "numpy>=1.26.4",
+    "numpy<2",
     "einops>=0.8.1",
     "sentencepiece>=0.2.0",
     "imageio>=2.37.0",
