@@ -40,6 +40,7 @@ __all__ = [
     "edit_image",
     "download_model",
     "default_model_path",
+    "huggingface_model_id",
 ]
 
 PIP_REQUIREMENTS = [
@@ -56,84 +57,52 @@ PIP_REQUIREMENTS = [
     "imageio-ffmpeg>=0.6.0",
 ]
 
-# Default paths - network drive location and HuggingFace fallback
-default_model_path = "/root/CleanCode/Github/ChronoEdit/checkpoints/ChronoEdit-14B-Diffusers"
+# HuggingFace model ID
 huggingface_model_id = "nvidia/ChronoEdit-14B-Diffusers"
 
-# Global device tracking
-_chronoedit_device = None
-
-
-def _default_chronoedit_device():
-    """
-    Get or initialize the default device for ChronoEdit model.
-    Uses rp.select_torch_device() to pick the best available device.
-
-    Returns:
-        The default torch device for ChronoEdit
-    """
-    global _chronoedit_device
-    if _chronoedit_device is None:
-        _chronoedit_device = rp.select_torch_device(reserve=True)
-    return _chronoedit_device
-
-
-def _install_dependencies():
-    """Install required dependencies for ChronoEdit."""
-    # Core dependencies
-    rp.pip_import("torch", auto_yes=True)
-    rp.pip_import("diffusers", auto_yes=True)
-    rp.pip_import("transformers", auto_yes=True)
-    rp.pip_import("accelerate", auto_yes=True)
-    rp.pip_import("peft", auto_yes=True)
-    # Note: flash_attn requires compilation; model works without it (just slower)
-    try:
-        rp.pip_import("flash_attn", auto_yes=True)
-    except Exception:
-        pass  # flash_attn optional, will fall back to standard attention
+# Global state
+default_model_path = None  # Set this to override HuggingFace cache location
 
 
 def download_model(path=None, force=False):
     """
-    Download the ChronoEdit model from HuggingFace.
+    Download the ChronoEdit model, or return cached path if already downloaded.
+
+    This function is idempotent - calling it multiple times will not
+    re-download. Use this to get the model path.
 
     Args:
-        path: Local path to download the model to. If None, uses default_model_path.
+        path: Optional local path. If None, uses HuggingFace cache.
         force: If True, re-download even if model exists.
 
     Returns:
-        Path to the downloaded model
+        Path to the model
     """
-    _install_dependencies()
-
-    path = path or default_model_path
-
-    # Check if model already exists
-    model_index = os.path.join(path, "model_index.json")
-    if os.path.exists(model_index) and not force:
-        print(f"Model already exists at {path}")
-        return path
-
-    print(f"Downloading ChronoEdit model to {path}...")
-    os.makedirs(path, exist_ok=True)
-
-    # Use huggingface_hub to download
     rp.pip_import("huggingface_hub", auto_yes=True)
     from huggingface_hub import snapshot_download
 
-    snapshot_download(
+    # Check if already exists when path is specified
+    if path:
+        model_index = os.path.join(path, "model_index.json")
+        if os.path.exists(model_index) and not force:
+            print(f"Model already exists at {path}")
+            return path
+        print(f"Downloading ChronoEdit model to {path}...")
+        os.makedirs(path, exist_ok=True)
+
+    # Single download call
+    result = snapshot_download(
         repo_id=huggingface_model_id,
         local_dir=path,
-        local_dir_use_symlinks=False,
+        local_dir_use_symlinks=False if path else True,
+        force_download=force,
     )
 
-    print(f"Model downloaded to {path}")
-    return path
+    if path:
+        print(f"Model downloaded to {path}")
+        return path
 
-
-def _get_chronoedit_source_path():
-    """Get the path to the ChronoEdit source code."""
-    return "/root/CleanCode/Github/ChronoEdit"
+    return result
 
 
 @rp.memoized
@@ -152,10 +121,9 @@ def _get_chronoedit_pipeline_helper(model_path, device, offload_model):
     """
     import torch
 
-    # Add ChronoEdit source to path for imports
-    chronoedit_source = _get_chronoedit_source_path()
-    if chronoedit_source not in sys.path:
-        sys.path.insert(0, chronoedit_source)
+    # Add model path to sys.path for chronoedit_diffusers imports
+    if model_path not in sys.path:
+        sys.path.insert(0, model_path)
 
     # Set environment variable to skip guardrails (they require gated nvidia model)
     os.environ["CHRONOEDIT_SKIP_GUARDRAILS"] = "1"
@@ -215,32 +183,24 @@ def _get_chronoedit_pipeline(model_path=None, device=None, offload_model=True):
     Get the ChronoEdit pipeline. Downloads from HuggingFace if not available locally.
 
     Args:
-        model_path: Path to the model. If None, uses default_model_path.
+        model_path: Path to the model. If None, uses HuggingFace cache.
         device: Device to load the model on. If None, auto-selects.
         offload_model: Whether to offload model to CPU after each forward pass.
 
     Returns:
         ChronoEdit pipeline
     """
-    _install_dependencies()
-
-    # Resolve model path
+    # Resolve model path - download if needed
     if model_path is None:
-        model_path = default_model_path
-        # Check if default exists, otherwise download
-        if not os.path.exists(os.path.join(model_path, "model_index.json")):
-            print(f"Model not found at {model_path}, downloading...")
-            download_model(model_path)
+        model_path = default_model_path  # Use global override if set
+    if model_path is None:
+        model_path = download_model()
+    elif not os.path.exists(os.path.join(model_path, "model_index.json")):
+        print(f"Model not found at {model_path}, downloading...")
+        model_path = download_model(model_path)
 
     # Resolve device
-    if device is None:
-        device = _default_chronoedit_device()
-    else:
-        global _chronoedit_device
-        _chronoedit_device = device
-
-    import torch
-    device = torch.device(device)
+    device = rp.r._resolve_torch_device(device)
 
     return _get_chronoedit_pipeline_helper(model_path, device, offload_model)
 
@@ -336,8 +296,6 @@ def edit_image(
         # Multi-GPU (for future pipeline parallelism)
         edited = edit_image("cat.jpg", "Add a hat", devices=[0, 1, 2, 3])
     """
-    # Make sure dependencies are installed first
-    _install_dependencies()
     import torch
 
     # Handle multi-GPU specification
@@ -353,6 +311,9 @@ def edit_image(
 
     # Get the pipeline
     pipe = _get_chronoedit_pipeline(model_path=model_path, device=device, offload_model=offload_model)
+
+    # Ensure pipeline is on device (may have been offloaded after previous run)
+    pipe.to(pipe.device)
 
     # Load and preprocess image
     pil_image = _load_image(image)

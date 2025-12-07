@@ -27,27 +27,12 @@ Python API Example:
     # Segment and track objects in video
     results = segment_video("video.mp4", "person")
 
-CLI Usage:
-    # Segment with text prompt and save visualization
-    python segment_anything.py segment_image photo.jpg "cat" --output=result.jpg --device=cuda:0
-
-    # Segment with point prompts
-    python segment_anything.py segment_image_points photo.jpg "[[100,200]]" "[1]" --output=points.jpg
-
-    # Segment with box prompts
-    python segment_anything.py segment_image_boxes photo.jpg "[[10,10,200,200]]" --output=boxes.jpg
-
-    # Download model to default location
-    python segment_anything.py download_model
-
-    # Get model path
-    python segment_anything.py get_model_path
+Module settings:
+    sam3.USE_MIRROR = True   # Use community mirror (default) vs official facebook/sam3
+    sam3.default_model_path = None  # Override HuggingFace cache location
 
 See: https://huggingface.co/facebook/sam3
      https://github.com/facebookresearch/sam3
-
-Note: This module uses the community mirror at 1038lab/sam3 for model weights
-      since the official facebook/sam3 requires gated access approval.
 """
 import rp
 
@@ -57,10 +42,16 @@ __all__ = [
     "segment_image_points",
     "segment_image_boxes",
     "segment_video",
+    "visualize_segmentation",
     "download_model",
-    "get_model_path",
+    "default_model_path",
 ]
 
+PIP_REQUIREMENTS = [
+    "torch",
+    "huggingface_hub",
+    "sam3",
+]
 
 # Model paths and identifiers
 MIRROR_MODEL_ID = "1038lab/sam3"
@@ -68,147 +59,70 @@ MIRROR_WEIGHTS_FILE = "sam3.pt"  # Use .pt format for compatibility with sam3 pa
 OFFICIAL_MODEL_ID = "facebook/sam3"
 OFFICIAL_WEIGHTS_FILE = "sam3.pt"
 
-# Default paths for local model storage
-DEFAULT_NETWORK_MODEL_PATH = "/root/models/sam3"
-DEFAULT_LOCAL_MODEL_PATH = "/models/sam3"
+# Default model path (set to override HuggingFace cache)
+default_model_path = None
 
-# Global state
-_sam3_device = None
-_sam3_model = None
-_sam3_processor = None
+# Use community mirror (no auth required) vs official facebook/sam3 (requires gated access)
+USE_MIRROR = True
 
 
-def get_model_path(prefer_local=True, use_mirror=True):
+def download_model(path=None, force=False):
     """
-    Get the path to use for SAM3 model weights.
+    Download SAM3 model, or return cached path if already downloaded.
+
+    This function is idempotent - calling it multiple times will not
+    re-download. Use this to get the model path.
+
+    Uses module-level `USE_MIRROR` to determine source (default True).
 
     Args:
-        prefer_local: If True, prefer local path over network path
-        use_mirror: If True, use community mirror; if False, use official (requires access)
-
-    Returns:
-        str: Path to model weights file or None if needs download
-    """
-    import os
-
-    paths_to_check = []
-    if prefer_local:
-        paths_to_check = [DEFAULT_LOCAL_MODEL_PATH, DEFAULT_NETWORK_MODEL_PATH]
-    else:
-        paths_to_check = [DEFAULT_NETWORK_MODEL_PATH, DEFAULT_LOCAL_MODEL_PATH]
-
-    for path in paths_to_check:
-        safetensors_file = os.path.join(path, "sam3.safetensors")
-        if os.path.exists(safetensors_file):
-            return safetensors_file
-        pt_file = os.path.join(path, "sam3.pt")
-        if os.path.exists(pt_file):
-            return pt_file
-
-    return None
-
-
-def download_model(path=None, use_mirror=True, force=False):
-    """
-    Download SAM3 model to specified path.
-
-    Args:
-        path: Directory to save model. Defaults to DEFAULT_NETWORK_MODEL_PATH
-        use_mirror: If True, download from community mirror (no auth required)
+        path: Directory to save model. If None, uses HuggingFace cache.
         force: If True, re-download even if model exists
 
     Returns:
-        str: Path where model was saved
+        str: Path to the model file
     """
     import os
 
-    if path is None:
-        path = DEFAULT_NETWORK_MODEL_PATH
-
     rp.pip_import("huggingface_hub")
     from huggingface_hub import hf_hub_download
 
-    os.makedirs(path, exist_ok=True)
+    # Use global override if set
+    if path is None:
+        path = default_model_path
 
-    if use_mirror:
-        weights_file = os.path.join(path, "sam3.safetensors")
+    repo_id = MIRROR_MODEL_ID if USE_MIRROR else OFFICIAL_MODEL_ID
+    filename = MIRROR_WEIGHTS_FILE if USE_MIRROR else OFFICIAL_WEIGHTS_FILE
+
+    # Check if already exists when path is specified
+    if path:
+        os.makedirs(path, exist_ok=True)
+        weights_file = os.path.join(path, filename)
         if os.path.exists(weights_file) and not force:
-            print(f"Model already exists at {weights_file}. Use force=True to re-download.")
+            print("Model already exists at %s" % weights_file)
             return weights_file
+        print("Downloading SAM3 model to %s..." % path)
 
-        print(f"Downloading SAM3 model from mirror to {path}...")
-        downloaded = hf_hub_download(
-            repo_id=MIRROR_MODEL_ID,
-            filename=MIRROR_WEIGHTS_FILE,
-            local_dir=path,
-        )
-        print(f"Model downloaded to {downloaded}")
-        return downloaded
-    else:
-        weights_file = os.path.join(path, "sam3.pt")
-        if os.path.exists(weights_file) and not force:
-            print(f"Model already exists at {weights_file}. Use force=True to re-download.")
-            return weights_file
-
-        print(f"Downloading SAM3 model from official repo to {path}...")
+    if not USE_MIRROR:
         print("Note: You must have access to facebook/sam3 on HuggingFace.")
-        downloaded = hf_hub_download(
-            repo_id=OFFICIAL_MODEL_ID,
-            filename=OFFICIAL_WEIGHTS_FILE,
-            local_dir=path,
-        )
-        print(f"Model downloaded to {downloaded}")
-        return downloaded
+
+    # Single download call - local_dir is None when using HuggingFace cache
+    return hf_hub_download(
+        repo_id=repo_id,
+        filename=filename,
+        local_dir=path,
+        force_download=force,
+    )
 
 
-def _default_sam3_device():
-    """Get or initialize the default device for SAM3 model."""
-    global _sam3_device
-    if _sam3_device is None:
-        _sam3_device = rp.select_torch_device(reserve=True)
-    return _sam3_device
-
-
-def _normalize_device(device):
-    """Normalize device specification."""
-    rp.pip_import("torch")
-    import torch
-    global _sam3_device
-
-    if device is None:
-        device = _default_sam3_device()
-
-    # Convert torch.device to string
-    if hasattr(device, 'type'):
-        device = str(device)
-    elif isinstance(device, int):
-        device = f"cuda:{device}" if torch.cuda.is_available() else "cpu"
-    elif isinstance(device, str) and device.lower() == "cpu":
-        device = "cpu"
-
-    _sam3_device = device
-    return device
-
-
-def _get_checkpoint_path(model_path=None, use_mirror=True):
+def _get_checkpoint_path(model_path=None):
     """Get the checkpoint path, downloading if necessary."""
     import os
-    rp.pip_import("huggingface_hub")
-    from huggingface_hub import hf_hub_download
 
     if model_path is not None and os.path.exists(model_path):
         return model_path
 
-    # Check local paths
-    local_path = get_model_path(use_mirror=use_mirror)
-    if local_path is not None:
-        return local_path
-
-    # Download from HuggingFace
-    if use_mirror:
-        return hf_hub_download(repo_id=MIRROR_MODEL_ID, filename=MIRROR_WEIGHTS_FILE)
-    else:
-        return hf_hub_download(repo_id=OFFICIAL_MODEL_ID, filename=OFFICIAL_WEIGHTS_FILE)
+    return download_model()
 
 
 @rp.memoized
@@ -247,10 +161,10 @@ def _get_sam3_model_helper(checkpoint_path, device):
     return model, processor
 
 
-def _get_sam3_model(model_path=None, device=None, use_mirror=True):
+def _get_sam3_model(model_path=None, device=None):
     """Get the SAM3 model, downloading if needed."""
-    device = _normalize_device(device)
-    checkpoint_path = _get_checkpoint_path(model_path, use_mirror)
+    device = str(rp.r._resolve_torch_device(device))
+    checkpoint_path = _get_checkpoint_path(model_path)
     return _get_sam3_model_helper(checkpoint_path, device)
 
 
@@ -266,37 +180,6 @@ def _load_image(image):
 
     return image
 
-
-def _save_visualization(image, masks, boxes, scores, output_path):
-    """Save a visualization with mask overlays and bounding boxes."""
-    import numpy as np
-
-    # Load original image if needed
-    if isinstance(image, str):
-        image = rp.load_image(image)
-
-    vis = rp.as_float_image(image).copy()
-
-    # Overlay masks with different colors
-    colors = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [1, 0, 1], [0, 1, 1]]
-    for i, mask in enumerate(masks):
-        color = colors[i % len(colors)]
-        vis[mask] = vis[mask] * 0.5 + np.array(color) * 0.5
-
-    # Draw bounding boxes
-    vis_byte = rp.as_byte_image(vis)
-    for i, box in enumerate(boxes):
-        x1, y1, x2, y2 = map(int, box)
-        color = [int(c * 255) for c in colors[i % len(colors)]]
-        thickness = 2
-        vis_byte[max(0,y1):min(vis_byte.shape[0],y1+thickness), max(0,x1):min(vis_byte.shape[1],x2)] = color
-        vis_byte[max(0,y2-thickness):min(vis_byte.shape[0],y2), max(0,x1):min(vis_byte.shape[1],x2)] = color
-        vis_byte[max(0,y1):min(vis_byte.shape[0],y2), max(0,x1):min(vis_byte.shape[1],x1+thickness)] = color
-        vis_byte[max(0,y1):min(vis_byte.shape[0],y2), max(0,x2-thickness):min(vis_byte.shape[1],x2)] = color
-
-    rp.save_image(vis_byte, output_path)
-    print(f"Saved visualization to: {output_path}")
-    print(f"  Found {len(masks)} objects, scores: {scores.tolist() if hasattr(scores, 'tolist') else list(scores)}")
 
 
 def _load_video(video, num_frames=None):
@@ -315,45 +198,69 @@ def _load_video(video, num_frames=None):
     return video
 
 
-def segment_image(image, text, *, device=None, model_path=None,
-                  threshold=0.5, use_mirror=True, output=None):
+def visualize_segmentation(image, masks, boxes=None, scores=None):
     """
-    Segment all instances of a concept in an image using text prompt.
+    Create a visualization of segmentation results overlaid on an image.
 
     Args:
-        image: np.ndarray, PIL Image, or path/URL
-        text: Text prompt describing what to segment (e.g., "person", "car")
-        device: Optional device to run inference on (str, int, or torch.device)
-        model_path: Optional model path to use a specific SAM3 model
-        threshold: Detection confidence threshold (default 0.5)
-        use_mirror: Whether to use community mirror for model download
-        output: Optional path to save visualization image
+        image: Original image (np.ndarray, PIL Image, or path/URL)
+        masks: NHW bool np.ndarray of binary masks
+        boxes: Optional Nx4 np.ndarray of bounding boxes in XYXY format
+        scores: Optional N np.ndarray of confidence scores (for annotation)
 
     Returns:
-        tuple: (masks, boxes, scores)
-            - masks: NHW bool np.ndarray - Binary masks for each detected instance
-            - boxes: Nx4 np.ndarray - Bounding boxes in XYXY format
-            - scores: N np.ndarray - Confidence scores for each detection
+        np.ndarray: HW3 uint8 image with mask overlays and optional boxes
     """
     import numpy as np
 
-    model, processor = _get_sam3_model(model_path=model_path, device=device, use_mirror=use_mirror)
+    if isinstance(image, str):
+        image = rp.load_image(image)
 
-    # Load and process image
-    pil_image = _load_image(image)
+    vis = rp.as_float_image(image).copy()
 
-    # Run inference using Sam3Processor
-    inference_state = processor.set_image(pil_image)
-    result = processor.set_text_prompt(state=inference_state, prompt=text)
+    colors = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [1, 0, 1], [0, 1, 1]]
+    for i, mask in enumerate(masks):
+        color = colors[i % len(colors)]
+        vis[mask] = vis[mask] * 0.5 + np.array(color) * 0.5
 
+    vis = rp.as_byte_image(vis)
+
+    if boxes is not None:
+        for i, box in enumerate(boxes):
+            x1, y1, x2, y2 = map(int, box)
+            color = [int(c * 255) for c in colors[i % len(colors)]]
+            thickness = 2
+            h, w = vis.shape[:2]
+            vis[max(0, y1):min(h, y1 + thickness), max(0, x1):min(w, x2)] = color
+            vis[max(0, y2 - thickness):min(h, y2), max(0, x1):min(w, x2)] = color
+            vis[max(0, y1):min(h, y2), max(0, x1):min(w, x1 + thickness)] = color
+            vis[max(0, y1):min(h, y2), max(0, x2 - thickness):min(w, x2)] = color
+
+    return vis
+
+
+def _process_sam3_result(result, height, width, threshold):
+    """
+    Convert SAM3 result dict to numpy arrays and apply postprocessing.
+
+    Args:
+        result: Dict with 'masks', 'boxes', 'scores' keys
+        height: Image height for empty array fallback
+        width: Image width for empty array fallback
+        threshold: Score threshold for filtering
+
+    Returns:
+        tuple: (masks, boxes, scores) as numpy arrays
+    """
+    import numpy as np
+    rp.pip_import("torch")
     import torch
 
-    # Extract results
     masks = result.get("masks", [])
     boxes = result.get("boxes", [])
     scores = result.get("scores", [])
 
-    # Convert to numpy arrays
+    # Convert masks to numpy
     if isinstance(masks, torch.Tensor):
         masks = masks.cpu().numpy()
     elif isinstance(masks, list) and len(masks) > 0:
@@ -362,8 +269,9 @@ def segment_image(image, text, *, device=None, model_path=None,
         else:
             masks = np.array(masks)
     else:
-        masks = np.zeros((0, pil_image.height, pil_image.width), dtype=bool)
+        masks = np.zeros((0, height, width), dtype=bool)
 
+    # Convert boxes to numpy
     if isinstance(boxes, torch.Tensor):
         boxes = boxes.cpu().numpy()
     elif isinstance(boxes, list) and len(boxes) > 0:
@@ -371,6 +279,7 @@ def segment_image(image, text, *, device=None, model_path=None,
     else:
         boxes = np.zeros((0, 4))
 
+    # Convert scores to numpy
     if isinstance(scores, torch.Tensor):
         scores = scores.cpu().numpy()
     elif isinstance(scores, list):
@@ -393,15 +302,38 @@ def segment_image(image, text, *, device=None, model_path=None,
     if len(masks) > 0 and masks.dtype != bool:
         masks = masks > 0.5
 
-    # Save visualization if output path provided
-    if output is not None:
-        _save_visualization(image, masks, boxes, scores, output)
-
     return masks, boxes, scores
 
 
+def segment_image(image, prompt, *, device=None, model_path=None, threshold=0.5):
+    """
+    Segment all instances of a concept in an image using text prompt.
+
+    Args:
+        image: np.ndarray, PIL Image, or path/URL
+        prompt: Text prompt describing what to segment (e.g., "person", "car")
+        device: Device to run inference on (str, int, or torch.device)
+        model_path: Model path to use a specific SAM3 model
+        threshold: Detection confidence threshold (default 0.5)
+
+    Returns:
+        tuple: (masks, boxes, scores)
+            - masks: NHW bool np.ndarray - Binary masks for each detected instance
+            - boxes: Nx4 np.ndarray - Bounding boxes in XYXY format
+            - scores: N np.ndarray - Confidence scores for each detection
+    """
+    model, processor = _get_sam3_model(model_path=model_path, device=device)
+
+    pil_image = _load_image(image)
+
+    inference_state = processor.set_image(pil_image)
+    result = processor.set_text_prompt(state=inference_state, prompt=prompt)
+
+    return _process_sam3_result(result, pil_image.height, pil_image.width, threshold)
+
+
 def segment_image_points(image, points, labels, *, device=None, model_path=None,
-                         threshold=0.5, use_mirror=True, point_box_size=0.02, output=None):
+                         threshold=0.5, point_box_size=0.02):
     """
     Segment objects in an image using point prompts.
 
@@ -412,21 +344,17 @@ def segment_image_points(image, points, labels, *, device=None, model_path=None,
         image: np.ndarray, PIL Image, or path/URL
         points: List of [x, y] coordinates or Nx2 array (in pixel coordinates)
         labels: List of labels (1=foreground, 0=background) or N array
-        device: Optional device to run inference on
-        model_path: Optional model path to use a specific SAM3 model
+        device: Device to run inference on
+        model_path: Model path to use a specific SAM3 model
         threshold: Detection confidence threshold (default 0.5)
-        use_mirror: Whether to use community mirror
         point_box_size: Size of the box around each point as fraction of image (default 0.02)
-        output: Optional path to save visualization image
 
     Returns:
         tuple: (masks, boxes, scores)
     """
     import numpy as np
 
-    model, processor = _get_sam3_model(model_path=model_path, device=device, use_mirror=use_mirror)
-
-    import torch
+    model, processor = _get_sam3_model(model_path=model_path, device=device)
 
     pil_image = _load_image(image)
     width, height = pil_image.size
@@ -434,77 +362,33 @@ def segment_image_points(image, points, labels, *, device=None, model_path=None,
     points = np.array(points) if not isinstance(points, np.ndarray) else points
     labels = np.array(labels) if not isinstance(labels, np.ndarray) else labels
 
-    # Set image and prepare for prompts
     inference_state = processor.set_image(pil_image)
     processor.reset_all_prompts(inference_state)
 
     # Convert points to tiny boxes in [center_x, center_y, width, height] normalized format
-    # Sam3Processor.add_geometric_prompt expects boxes in [cx, cy, w, h] normalized to [0, 1]
     result = None
-    for i, (point, label) in enumerate(zip(points, labels)):
-        # Normalize point coordinates to [0, 1]
+    for point, label in zip(points, labels):
         cx = point[0] / width
         cy = point[1] / height
-        # Create tiny box around point
         box = [cx, cy, point_box_size, point_box_size]
-        is_positive = bool(label == 1)
         result = processor.add_geometric_prompt(
             box=box,
-            label=is_positive,
+            label=bool(label == 1),
             state=inference_state
         )
 
     if result is None:
-        # No points provided
         return (
             np.zeros((0, height, width), dtype=bool),
             np.zeros((0, 4)),
             np.array([])
         )
 
-    masks = result.get("masks", [])
-    boxes = result.get("boxes", [])
-    scores = result.get("scores", [])
-
-    if isinstance(masks, torch.Tensor):
-        masks = masks.cpu().numpy()
-    elif isinstance(masks, list) and len(masks) > 0:
-        masks = np.array(masks)
-    else:
-        masks = np.zeros((0, height, width), dtype=bool)
-
-    if isinstance(boxes, torch.Tensor):
-        boxes = boxes.cpu().numpy()
-    else:
-        boxes = np.array(boxes) if len(boxes) > 0 else np.zeros((0, 4))
-
-    if isinstance(scores, torch.Tensor):
-        scores = scores.cpu().numpy()
-    else:
-        scores = np.array(scores) if len(scores) > 0 else np.array([])
-
-    # Filter by threshold
-    if len(scores) > 0:
-        mask_thresh = scores >= threshold
-        masks = masks[mask_thresh]
-        boxes = boxes[mask_thresh]
-        scores = scores[mask_thresh]
-
-    # Squeeze extra dimensions from masks
-    while len(masks) > 0 and masks.ndim > 3:
-        masks = masks.squeeze(1)
-
-    if len(masks) > 0 and masks.dtype != bool:
-        masks = masks > 0.5
-
-    if output is not None:
-        _save_visualization(image, masks, boxes, scores, output)
-
-    return masks, boxes, scores
+    return _process_sam3_result(result, height, width, threshold)
 
 
-def segment_image_boxes(image, boxes, labels=None, text=None, *, device=None, model_path=None,
-                        threshold=0.5, use_mirror=True, output=None):
+def segment_image_boxes(image, boxes, labels=None, prompt=None, *, device=None, model_path=None,
+                        threshold=0.5):
     """
     Segment objects in an image using bounding box prompts.
 
@@ -512,21 +396,17 @@ def segment_image_boxes(image, boxes, labels=None, text=None, *, device=None, mo
         image: np.ndarray, PIL Image, or path/URL
         boxes: List of [x1, y1, x2, y2] boxes or Nx4 array (in pixel coordinates)
         labels: Optional list of labels (1=positive, 0=negative). Default: all positive.
-        text: Optional text prompt to combine with box prompts
-        device: Optional device to run inference on
-        model_path: Optional model path to use a specific SAM3 model
+        prompt: Optional text prompt to combine with box prompts
+        device: Device to run inference on
+        model_path: Model path to use a specific SAM3 model
         threshold: Detection confidence threshold (default 0.5)
-        use_mirror: Whether to use community mirror
-        output: Optional path to save visualization image
 
     Returns:
         tuple: (masks, boxes, scores)
     """
     import numpy as np
 
-    model, processor = _get_sam3_model(model_path=model_path, device=device, use_mirror=use_mirror)
-
-    import torch
+    model, processor = _get_sam3_model(model_path=model_path, device=device)
 
     pil_image = _load_image(image)
     width, height = pil_image.size
@@ -537,93 +417,48 @@ def segment_image_boxes(image, boxes, labels=None, text=None, *, device=None, mo
         labels = [1] * len(boxes_arr)
     labels = np.array(labels) if not isinstance(labels, np.ndarray) else labels
 
-    # Set image and prepare for prompts
     inference_state = processor.set_image(pil_image)
     processor.reset_all_prompts(inference_state)
 
-    # Optionally set text prompt first
-    if text is not None:
-        inference_state = processor.set_text_prompt(state=inference_state, prompt=text)
+    if prompt is not None:
+        inference_state = processor.set_text_prompt(state=inference_state, prompt=prompt)
 
     # Convert boxes from [x1, y1, x2, y2] to [center_x, center_y, width, height] normalized format
     result = None
-    for i, (box, label) in enumerate(zip(boxes_arr, labels)):
+    for box, label in zip(boxes_arr, labels):
         x1, y1, x2, y2 = box
-        # Convert to center format and normalize
         cx = ((x1 + x2) / 2) / width
         cy = ((y1 + y2) / 2) / height
         w = (x2 - x1) / width
         h = (y2 - y1) / height
-        box_cxcywh = [cx, cy, w, h]
-        is_positive = bool(label == 1)
         result = processor.add_geometric_prompt(
-            box=box_cxcywh,
-            label=is_positive,
+            box=[cx, cy, w, h],
+            label=bool(label == 1),
             state=inference_state
         )
 
     if result is None:
-        # No boxes provided
         return (
             np.zeros((0, height, width), dtype=bool),
             np.zeros((0, 4)),
             np.array([])
         )
 
-    masks = result.get("masks", [])
-    out_boxes = result.get("boxes", [])
-    scores = result.get("scores", [])
-
-    if isinstance(masks, torch.Tensor):
-        masks = masks.cpu().numpy()
-    elif isinstance(masks, list) and len(masks) > 0:
-        masks = np.array(masks)
-    else:
-        masks = np.zeros((0, height, width), dtype=bool)
-
-    if isinstance(out_boxes, torch.Tensor):
-        out_boxes = out_boxes.cpu().numpy()
-    else:
-        out_boxes = np.array(out_boxes) if len(out_boxes) > 0 else np.zeros((0, 4))
-
-    if isinstance(scores, torch.Tensor):
-        scores = scores.cpu().numpy()
-    else:
-        scores = np.array(scores) if len(scores) > 0 else np.array([])
-
-    # Filter by threshold
-    if len(scores) > 0:
-        mask_thresh = scores >= threshold
-        masks = masks[mask_thresh]
-        out_boxes = out_boxes[mask_thresh]
-        scores = scores[mask_thresh]
-
-    # Squeeze extra dimensions from masks
-    while len(masks) > 0 and masks.ndim > 3:
-        masks = masks.squeeze(1)
-
-    if len(masks) > 0 and masks.dtype != bool:
-        masks = masks > 0.5
-
-    if output is not None:
-        _save_visualization(image, masks, out_boxes, scores, output)
-
-    return masks, out_boxes, scores
+    return _process_sam3_result(result, height, width, threshold)
 
 
-def segment_video(video, text, *, device=None, model_path=None,
-                  num_frames=None, max_frames_to_track=None, use_mirror=True):
+def segment_video(video, prompt, *, device=None, model_path=None,
+                  num_frames=None, max_frames_to_track=None):
     """
     Segment and track all instances of a concept throughout a video.
 
     Args:
         video: List of frames, path, or URL
-        text: Text prompt describing what to segment (e.g., "person")
-        device: Optional device to run inference on
-        model_path: Optional model path to use a specific SAM3 model
+        prompt: Text prompt describing what to segment (e.g., "person")
+        device: Device to run inference on
+        model_path: Model path to use a specific SAM3 model
         num_frames: Number of frames to process. If None, processes all frames.
         max_frames_to_track: Maximum frames to track. If None, tracks all frames.
-        use_mirror: Whether to use community mirror
 
     Returns:
         dict: Results with 'masks', 'boxes', 'scores', 'object_ids' keys
@@ -637,8 +472,8 @@ def segment_video(video, text, *, device=None, model_path=None,
     rp.pip_import("sam3")
     from sam3.model_builder import build_sam3_video_predictor
 
-    device = _normalize_device(device)
-    checkpoint_path = _get_checkpoint_path(model_path, use_mirror)
+    device = str(rp.r._resolve_torch_device(device))
+    checkpoint_path = _get_checkpoint_path(model_path)
 
     frames = _load_video(video, num_frames)
 
@@ -666,7 +501,7 @@ def segment_video(video, text, *, device=None, model_path=None,
                 type="add_prompt",
                 session_id=session_id,
                 frame_index=0,
-                text=text
+                text=prompt
             )
         )
 

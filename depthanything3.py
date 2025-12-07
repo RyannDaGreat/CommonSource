@@ -54,7 +54,7 @@ __all__ = [
     "estimate_depth_video",
     "estimate_depth_multiview",
     "download_model",
-    "get_model_path",
+    "default_model_path",
 ]
 
 PIP_REQUIREMENTS = [
@@ -65,12 +65,19 @@ PIP_REQUIREMENTS = [
     "safetensors",
     "huggingface_hub",
     "omegaconf",
-    "opencv-python",
+    "addict",
+    "opencv-python",  # imports as cv2
+    "scipy",
+    "matplotlib",
     "imageio",
     "plyfile",
     "trimesh",
     "numpy<2",
     "moviepy==1.0.3",
+    # Optional for specific features:
+    # "xformers",  # for faster attention
+    # "evo",  # for camera pose evaluation
+    # "pycolmap",  # for COLMAP export
 ]
 
 
@@ -92,47 +99,8 @@ DEFAULT_MONO_MODEL = "mono-large"  # Best for single image relative depth
 DEFAULT_METRIC_MODEL = "metric-large"  # Best for metric depth
 DEFAULT_MULTIVIEW_MODEL = "nested-giant-large"  # Best for multi-view
 
-# Default paths for local model storage
-DEFAULT_NETWORK_MODEL_PATH = "/root/models/depth_anything_3"
-DEFAULT_LOCAL_MODEL_PATH = "/models/depth_anything_3"
-
-# Global device state
-_da3_device = None
-
-
-def _default_da3_device():
-    """
-    Get or initialize the default device for Depth Anything 3 model.
-    Uses rp.select_torch_device() to pick the best available device.
-
-    Returns:
-        The default torch device for DA3
-    """
-    global _da3_device
-    if _da3_device is None:
-        _da3_device = rp.select_torch_device(reserve=True)
-    return _da3_device
-
-
-def _normalize_device(device):
-    """Normalize device specification to torch.device."""
-    torch = rp.pip_import("torch", auto_yes=True)
-    global _da3_device
-
-    if device is None:
-        device = _default_da3_device()
-    elif isinstance(device, int):
-        device = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu")
-    elif isinstance(device, str):
-        if device.lower() == "cpu":
-            device = torch.device("cpu")
-        elif device.isdigit():
-            device = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu")
-        else:
-            device = torch.device(device)
-
-    _da3_device = device
-    return device
+# Default paths for local model storage (set to override HuggingFace cache)
+default_model_path = None
 
 
 def _get_variant_path(variant):
@@ -145,57 +113,20 @@ def _get_variant_path(variant):
     raise ValueError(f"Unknown model variant: {variant}. Available: {list(MODEL_VARIANTS.keys())}")
 
 
-def get_model_path(variant="mono-large", prefer_local=True):
-    """
-    Get the local path for a DA3 model variant if it exists.
-
-    Args:
-        variant: Model variant name or full HuggingFace path
-        prefer_local: If True, prefer local path over network path
-
-    Returns:
-        str: Path to model directory or None if needs download
-    """
-    import os
-
-    # Normalize variant name
-    if variant in MODEL_VARIANTS:
-        folder_name = variant.replace("-", "_")
-    else:
-        folder_name = variant.split("/")[-1].lower().replace("-", "_")
-
-    paths_to_check = []
-    if prefer_local:
-        paths_to_check = [
-            os.path.join(DEFAULT_LOCAL_MODEL_PATH, folder_name),
-            os.path.join(DEFAULT_NETWORK_MODEL_PATH, folder_name),
-        ]
-    else:
-        paths_to_check = [
-            os.path.join(DEFAULT_NETWORK_MODEL_PATH, folder_name),
-            os.path.join(DEFAULT_LOCAL_MODEL_PATH, folder_name),
-        ]
-
-    for path in paths_to_check:
-        if os.path.isdir(path):
-            # Check for model files
-            if any(f.endswith(('.safetensors', '.bin', '.pt')) for f in os.listdir(path)):
-                return path
-
-    return None
-
-
 def download_model(variant="mono-large", path=None, force=False):
     """
-    Download a DA3 model variant to specified path.
+    Download a DA3 model variant, or return cached path if already downloaded.
+
+    This function is idempotent - calling it multiple times with the same
+    variant will not re-download. Use this to get the model path.
 
     Args:
         variant: Model variant name (e.g., "mono-large", "metric-large", "base")
-        path: Directory to save model. Defaults to DEFAULT_NETWORK_MODEL_PATH
+        path: Directory to save model. If None, uses HuggingFace cache.
         force: If True, re-download even if model exists
 
     Returns:
-        str: Path where model was saved
+        str: Path to the model
     """
     import os
 
@@ -204,24 +135,28 @@ def download_model(variant="mono-large", path=None, force=False):
 
     hf_path = _get_variant_path(variant)
 
+    # Use global override if set
     if path is None:
+        path = default_model_path
+
+    # When path is specified, use a subfolder and check if already exists
+    local_dir = None
+    if path:
         folder_name = variant.replace("-", "_") if variant in MODEL_VARIANTS else variant.split("/")[-1].lower().replace("-", "_")
-        path = os.path.join(DEFAULT_NETWORK_MODEL_PATH, folder_name)
+        local_dir = os.path.join(path, folder_name)
+        if os.path.exists(local_dir) and not force:
+            print(f"Model already exists at {local_dir}")
+            return local_dir
+        os.makedirs(local_dir, exist_ok=True)
+        print(f"Downloading Depth Anything 3 model '{variant}' to {local_dir}...")
 
-    if os.path.exists(path) and not force:
-        print(f"Model already exists at {path}. Use force=True to re-download.")
-        return path
-
-    os.makedirs(path, exist_ok=True)
-
-    print(f"Downloading Depth Anything 3 model '{variant}' to {path}...")
-    downloaded = snapshot_download(
+    # Single download call
+    return snapshot_download(
         repo_id=hf_path,
-        local_dir=path,
-        local_dir_use_symlinks=False,
+        local_dir=local_dir,
+        local_dir_use_symlinks=False if local_dir else True,
+        force_download=force,
     )
-    print(f"Model downloaded to {downloaded}")
-    return downloaded
 
 
 def _ensure_da3_package():
@@ -329,28 +264,15 @@ def _get_da3_model(variant=None, model_path=None, device=None):
     Returns:
         model: The loaded DA3 model
     """
-    device = _normalize_device(device)
+    device = rp.r._resolve_torch_device(device)
     device_str = str(device)
 
     # Determine what to load
     if model_path is not None:
-        # Use explicit path
         load_path = model_path
-    elif variant is not None:
-        # Try local path first
-        local_path = get_model_path(variant)
-        if local_path is not None:
-            load_path = local_path
-        else:
-            # Use HuggingFace path (will download automatically)
-            load_path = _get_variant_path(variant)
     else:
-        # Use default
-        local_path = get_model_path(DEFAULT_MONO_MODEL)
-        if local_path is not None:
-            load_path = local_path
-        else:
-            load_path = MODEL_VARIANTS[DEFAULT_MONO_MODEL]
+        # Download (or get from cache) the specified variant
+        load_path = download_model(variant or DEFAULT_MONO_MODEL)
 
     return _get_da3_model_helper(load_path, device_str)
 
@@ -406,7 +328,7 @@ def _load_video(video, num_frames=None):
     return video
 
 
-def estimate_depth(image, *, device=None, model_path=None, variant=None, normalize=True):
+def estimate_depth(image, *, variant=None, device=None, model_path=None, normalize=True):
     """
     Estimate relative depth from a single image.
 
@@ -415,9 +337,9 @@ def estimate_depth(image, *, device=None, model_path=None, variant=None, normali
 
     Args:
         image: np.ndarray, PIL Image, or path/URL
+        variant: Model variant to use (default: "mono-large")
         device: Optional device to run inference on (str like "cuda:0", int like 0, or torch.device)
         model_path: Optional explicit path to model weights
-        variant: Model variant to use (default: "mono-large")
         normalize: If True, normalize depth to 0-1 range
 
     Returns:
@@ -453,7 +375,7 @@ def estimate_depth(image, *, device=None, model_path=None, variant=None, normali
     return depth
 
 
-def estimate_depth_metric(image, *, device=None, model_path=None, variant=None):
+def estimate_depth_metric(image, *, variant=None, device=None, model_path=None):
     """
     Estimate metric depth from a single image.
 
@@ -461,9 +383,9 @@ def estimate_depth_metric(image, *, device=None, model_path=None, variant=None):
 
     Args:
         image: np.ndarray, PIL Image, or path/URL
+        variant: Model variant to use (default: "metric-large")
         device: Optional device to run inference on
         model_path: Optional explicit path to model weights
-        variant: Model variant to use (default: "metric-large")
 
     Returns:
         depth: HW float32 np.ndarray with depth values in meters
@@ -488,7 +410,7 @@ def estimate_depth_metric(image, *, device=None, model_path=None, variant=None):
     return depth.astype(np.float32)
 
 
-def estimate_depth_video(video, *, device=None, model_path=None, variant=None,
+def estimate_depth_video(video, *, variant=None, device=None, model_path=None,
                          num_frames=None, normalize=True):
     """
     Estimate depth maps for video frames.
@@ -498,9 +420,9 @@ def estimate_depth_video(video, *, device=None, model_path=None, variant=None,
 
     Args:
         video: List of frames, path, or URL
+        variant: Model variant to use (default: "mono-large")
         device: Optional device to run inference on
         model_path: Optional explicit path to model weights
-        variant: Model variant to use (default: "mono-large")
         num_frames: Number of frames to process (None = all frames)
         normalize: If True, normalize each depth map to 0-1 range
 
@@ -537,7 +459,7 @@ def estimate_depth_video(video, *, device=None, model_path=None, variant=None,
     return np.stack(depths, axis=0)
 
 
-def estimate_depth_multiview(images, *, device=None, model_path=None, variant=None,
+def estimate_depth_multiview(images, *, variant=None, device=None, model_path=None,
                              return_confidence=False, return_poses=False):
     """
     Estimate spatially consistent depth from multiple views.
@@ -547,9 +469,9 @@ def estimate_depth_multiview(images, *, device=None, model_path=None, variant=No
 
     Args:
         images: List of images (np.ndarray, PIL Image, or path/URL)
+        variant: Model variant to use (default: "nested-giant-large")
         device: Optional device to run inference on
         model_path: Optional explicit path to model weights
-        variant: Model variant to use (default: "nested-giant-large")
         return_confidence: If True, also return confidence maps
         return_poses: If True, also return estimated camera poses
 

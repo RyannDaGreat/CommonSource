@@ -44,10 +44,7 @@ __all__ = [
     "get_t2i_pipeline",
     "get_i2i_pipeline",
     "download_models",
-    "set_device",
-    "get_device",
-    "DEFAULT_MODEL_PATH",
-    "DEFAULT_LOCAL_CACHE",
+    "default_model_path",
 ]
 
 PIP_REQUIREMENTS = [
@@ -58,60 +55,63 @@ PIP_REQUIREMENTS = [
     "accelerate",
     "einops",
     "numpy",
-    "pillow",
+    "pillow",  # imports as PIL
     "omegaconf",
     "safetensors",
+    "huggingface_hub",
     "sentencepiece",
     "imageio",
     "imageio-ffmpeg",
-    "opencv-python",
+    "opencv-python",  # imports as cv2
     "peft",
+    "gitpython",  # imports as git
+    "fire",
+    "flash_attn",
 ]
 
-# Default paths
-DEFAULT_MODEL_PATH = "/root/CleanCode/Github/kandinsky-5/weights"
-DEFAULT_LOCAL_CACHE = "/models/kandinsky5"
-
-# Global device variable (like SA2VA pattern)
-_kandinsky_device = None
+# Default model path
+default_model_path = os.path.join(os.path.expanduser("~"), ".cache", "kandinsky5")
 
 
-def _default_device():
-    """Get the default device, selecting one if not already set.
+def _get_kandinsky_repo_path():
+    """Get the path to the kandinsky-5 repo, cloning if needed."""
+    repo_path = os.path.join(default_model_path, "kandinsky-5")
 
-    Handles CUDA_VISIBLE_DEVICES properly - if only one GPU is visible,
-    use cuda:0 rather than trying to use a saved device index that may
-    not exist in the restricted environment.
-    """
-    global _kandinsky_device
-    if _kandinsky_device is None:
-        # Ensure torch is installed before selecting device (auto_yes for non-interactive)
-        rp.pip_import("torch", auto_yes=True)
-        import torch
+    if not os.path.exists(repo_path):
+        print("Cloning Kandinsky-5 repository...")
+        os.makedirs(default_model_path, exist_ok=True)
+        rp.pip_import("git", "gitpython")
+        import git
+        git.Repo.clone_from(
+            "https://github.com/ai-forever/kandinsky-5.git",
+            repo_path,
+        )
+        print(f"Repository cloned to {repo_path}")
 
-        if torch.cuda.is_available():
-            num_gpus = torch.cuda.device_count()
-            if num_gpus == 1:
-                # Only one GPU visible (likely CUDA_VISIBLE_DEVICES set)
-                # Use cuda:0 directly instead of rp.select_torch_device
-                _kandinsky_device = "cuda:0"
-            else:
-                # Multiple GPUs available, let user select
-                _kandinsky_device = rp.select_torch_device(reserve=True)
-        else:
-            _kandinsky_device = "cpu"
-    return _kandinsky_device
+    return repo_path
 
 
-def set_device(device):
-    """Set the global device for Kandinsky models."""
-    global _kandinsky_device
-    _kandinsky_device = device
+def _get_config_path(variant: str, pipeline_type: str):
+    """Get the config path for a model, downloading repo if needed."""
+    repo_path = _get_kandinsky_repo_path()
 
+    # Map pipeline type to config file name
+    config_map = {
+        "t2v": f"k5_{variant}_t2v_5s_sft_sd.yaml",
+        "i2v": f"k5_{variant}_i2v_5s_sft_sd.yaml",
+        "t2i": f"k5_{variant}_t2i_512_sft.yaml",
+        "i2i": f"k5_{variant}_i2i_512_sft.yaml",
+    }
 
-def get_device():
-    """Get the current device for Kandinsky models."""
-    return _default_device()
+    config_name = config_map.get(pipeline_type)
+    if not config_name:
+        raise ValueError(f"Unknown pipeline type: {pipeline_type}")
+
+    config_path = os.path.join(repo_path, "configs", config_name)
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config not found: {config_path}")
+
+    return config_path
 
 
 def _disable_warnings():
@@ -134,25 +134,14 @@ def _disable_warnings():
 
 
 def _ensure_kandinsky_installed():
-    """Ensure kandinsky package and dependencies are installed."""
-    # Core dependencies - auto_yes=True allows non-interactive install
-    rp.pip_import("torch", auto_yes=True)
-    rp.pip_import("numpy", auto_yes=True)
-    rp.pip_import("PIL", "pillow", auto_yes=True)
-    rp.pip_import("omegaconf", auto_yes=True)
-    rp.pip_import("safetensors", auto_yes=True)
-    rp.pip_import("transformers", auto_yes=True)
-    rp.pip_import("huggingface_hub", auto_yes=True)
-    rp.pip_import("einops", auto_yes=True)
-    rp.pip_import("flash_attn", auto_yes=True)
-
+    """Ensure kandinsky package is importable, adding repo to path if needed."""
     # Check if kandinsky is available
     try:
         from kandinsky import get_T2V_pipeline
     except ImportError:
-        # Try to install from the local repo
-        kandinsky_path = "/root/CleanCode/Github/kandinsky-5"
-        if os.path.exists(kandinsky_path):
+        # Try to add kandinsky repo to path
+        kandinsky_path = _get_kandinsky_repo_path()
+        if kandinsky_path and os.path.exists(kandinsky_path):
             import sys
             if kandinsky_path not in sys.path:
                 sys.path.insert(0, kandinsky_path)
@@ -225,7 +214,7 @@ def _video_to_numpy(video_frames):
 
 
 def download_models(
-    model_type: str = "lite",
+    variant: str = "lite",
     source_path: str = None,
     local_cache: str = None,
     include_t2v: bool = True,
@@ -237,9 +226,9 @@ def download_models(
     Download/cache Kandinsky models from network storage to local storage.
 
     Args:
-        model_type: "lite" or "pro" - which model size to download
-        source_path: Network storage path (default: DEFAULT_MODEL_PATH)
-        local_cache: Local cache path (default: DEFAULT_LOCAL_CACHE)
+        variant: "lite" or "pro" - which model variant to download
+        source_path: Network storage path containing the model weights
+        local_cache: Local cache path (default: default_model_path)
         include_t2v: Download text-to-video model
         include_i2v: Download image-to-video model
         include_t2i: Download text-to-image model
@@ -249,9 +238,9 @@ def download_models(
         dict: Paths to downloaded model components
     """
     if source_path is None:
-        source_path = DEFAULT_MODEL_PATH
+        raise ValueError("source_path must be provided - specify path to Kandinsky weights")
     if local_cache is None:
-        local_cache = DEFAULT_LOCAL_CACHE
+        local_cache = str(default_model_path)
 
     os.makedirs(local_cache, exist_ok=True)
 
@@ -263,7 +252,7 @@ def download_models(
     }
 
     # Add model checkpoints based on selection
-    if model_type == "lite":
+    if variant == "lite":
         if include_t2v:
             items["model/kandinsky5lite_t2v_sft_5s.safetensors"] = "file"
         if include_i2v:
@@ -272,7 +261,7 @@ def download_models(
             items["model/kandinsky5lite_t2i.safetensors"] = "file"
         if include_i2i:
             items["model/kandinsky5lite_i2i.safetensors"] = "file"
-    elif model_type == "pro":
+    elif variant == "pro":
         if include_t2v:
             items["model/kandinsky5pro_t2v_sft_5s.safetensors"] = "file"
 
@@ -301,225 +290,145 @@ def download_models(
     }
 
 
-@rp.memoized
-def _get_t2v_pipeline_helper(config_path: str, device: str, offload: bool):
-    """Helper to load and cache T2V pipeline."""
+def _get_pipeline_helper(pipeline_type: str, config_path: str, device: str, offload: bool):
+    """
+    Load and cache a Kandinsky pipeline. Results are memoized via the wrapper functions.
+
+    Args:
+        pipeline_type: One of "t2v", "i2v", "t2i", "i2i"
+        config_path: Path to config YAML
+        device: Device string
+        offload: Whether to offload models to CPU
+    """
     _ensure_kandinsky_installed()
     _disable_warnings()
 
-    from kandinsky import get_T2V_pipeline
+    from kandinsky import get_T2V_pipeline, get_I2V_pipeline, get_T2I_pipeline, get_I2I_pipeline
+
+    getter_map = {
+        "t2v": get_T2V_pipeline,
+        "i2v": get_I2V_pipeline,
+        "t2i": get_T2I_pipeline,
+        "i2i": get_I2I_pipeline,
+    }
 
     device_map = {"dit": device, "vae": device, "text_embedder": device}
 
-    return get_T2V_pipeline(
+    return getter_map[pipeline_type](
         device_map=device_map,
         conf_path=config_path,
         offload=offload,
     )
 
 
-def get_t2v_pipeline(
-    model_type: str = "lite",
+# Memoized wrappers - need separate functions for proper caching by arguments
+@rp.memoized
+def _get_t2v_pipeline_helper(config_path: str, device: str, offload: bool):
+    return _get_pipeline_helper("t2v", config_path, device, offload)
+
+@rp.memoized
+def _get_i2v_pipeline_helper(config_path: str, device: str, offload: bool):
+    return _get_pipeline_helper("i2v", config_path, device, offload)
+
+@rp.memoized
+def _get_t2i_pipeline_helper(config_path: str, device: str, offload: bool):
+    return _get_pipeline_helper("t2i", config_path, device, offload)
+
+@rp.memoized
+def _get_i2i_pipeline_helper(config_path: str, device: str, offload: bool):
+    return _get_pipeline_helper("i2i", config_path, device, offload)
+
+
+def _get_pipeline(
+    pipeline_type: str,
+    variant: str = "lite",
     config_path: str = None,
-    model_path: str = None,
     device: str = None,
     offload: bool = False,
 ):
+    """Generic pipeline getter - resolves device and config, then calls memoized helper."""
+    device = str(rp.r._resolve_torch_device(device))
+
+    if config_path is None:
+        config_path = _get_config_path(variant, pipeline_type)
+
+    helper_map = {
+        "t2v": _get_t2v_pipeline_helper,
+        "i2v": _get_i2v_pipeline_helper,
+        "t2i": _get_t2i_pipeline_helper,
+        "i2i": _get_i2i_pipeline_helper,
+    }
+
+    return helper_map[pipeline_type](config_path, device, offload)
+
+
+def get_t2v_pipeline(variant: str = "lite", config_path: str = None, device: str = None, offload: bool = False):
     """
     Get a text-to-video pipeline.
 
     Args:
-        model_type: "lite" or "pro"
+        variant: "lite" or "pro"
         config_path: Path to config YAML (auto-generated if None)
-        model_path: Path to model weights
         device: Device to use (auto-selected if None)
         offload: Whether to offload models to CPU to save VRAM
 
     Returns:
         Kandinsky5T2VPipeline
     """
-    if device is None:
-        device = str(_default_device())
-
-    if config_path is None:
-        # Generate config path based on model type
-        if model_path is None:
-            model_path = DEFAULT_LOCAL_CACHE
-            if not os.path.exists(os.path.join(model_path, "model")):
-                model_path = DEFAULT_MODEL_PATH
-
-        # Check for local config
-        config_dir = "/root/CleanCode/Github/kandinsky-5/configs_local"
-        config_name = f"k5_{model_type}_t2v_5s_sft_sd_local.yaml"
-        config_path = os.path.join(config_dir, config_name)
-
-        if not os.path.exists(config_path):
-            # Fall back to standard config
-            config_dir = "/root/CleanCode/Github/kandinsky-5/configs"
-            config_name = f"k5_{model_type}_t2v_5s_sft_sd.yaml"
-            config_path = os.path.join(config_dir, config_name)
-
-    return _get_t2v_pipeline_helper(config_path, device, offload)
+    return _get_pipeline("t2v", variant, config_path, device, offload)
 
 
-@rp.memoized
-def _get_i2v_pipeline_helper(config_path: str, device: str, offload: bool):
-    """Helper to load and cache I2V pipeline."""
-    _ensure_kandinsky_installed()
-    _disable_warnings()
-
-    from kandinsky import get_I2V_pipeline
-
-    device_map = {"dit": device, "vae": device, "text_embedder": device}
-
-    return get_I2V_pipeline(
-        device_map=device_map,
-        conf_path=config_path,
-        offload=offload,
-    )
-
-
-def get_i2v_pipeline(
-    model_type: str = "lite",
-    config_path: str = None,
-    model_path: str = None,
-    device: str = None,
-    offload: bool = False,
-):
+def get_i2v_pipeline(variant: str = "lite", config_path: str = None, device: str = None, offload: bool = False):
     """
     Get an image-to-video pipeline.
 
     Args:
-        model_type: "lite" (pro not available for i2v)
+        variant: "lite" (pro not available for i2v)
         config_path: Path to config YAML
-        model_path: Path to model weights
         device: Device to use (auto-selected if None)
         offload: Whether to offload models to CPU
 
     Returns:
         Kandinsky5I2VPipeline
     """
-    if device is None:
-        device = str(_default_device())
-
-    if config_path is None:
-        config_dir = "/root/CleanCode/Github/kandinsky-5/configs_local"
-        config_name = f"k5_{model_type}_i2v_5s_sft_sd_local.yaml"
-        config_path = os.path.join(config_dir, config_name)
-
-        if not os.path.exists(config_path):
-            config_dir = "/root/CleanCode/Github/kandinsky-5/configs"
-            config_name = f"k5_{model_type}_i2v_5s_sft_sd.yaml"
-            config_path = os.path.join(config_dir, config_name)
-
-    return _get_i2v_pipeline_helper(config_path, device, offload)
+    return _get_pipeline("i2v", variant, config_path, device, offload)
 
 
-@rp.memoized
-def _get_t2i_pipeline_helper(config_path: str, device: str, offload: bool):
-    """Helper to load and cache T2I pipeline."""
-    _ensure_kandinsky_installed()
-    _disable_warnings()
-
-    from kandinsky import get_T2I_pipeline
-
-    device_map = {"dit": device, "vae": device, "text_embedder": device}
-
-    return get_T2I_pipeline(
-        device_map=device_map,
-        conf_path=config_path,
-        offload=offload,
-    )
-
-
-def get_t2i_pipeline(
-    config_path: str = None,
-    model_path: str = None,
-    device: str = None,
-    offload: bool = False,
-):
+def get_t2i_pipeline(variant: str = "lite", config_path: str = None, device: str = None, offload: bool = False):
     """
     Get a text-to-image pipeline.
 
     Args:
+        variant: "lite" or "pro"
         config_path: Path to config YAML
-        model_path: Path to model weights
         device: Device to use (auto-selected if None)
         offload: Whether to offload models to CPU
 
     Returns:
         Kandinsky5T2IPipeline
     """
-    if device is None:
-        device = str(_default_device())
-
-    if config_path is None:
-        config_dir = "/root/CleanCode/Github/kandinsky-5/configs_local"
-        config_name = "k5_lite_t2i_sft_hd_local.yaml"
-        config_path = os.path.join(config_dir, config_name)
-
-        if not os.path.exists(config_path):
-            config_dir = "/root/CleanCode/Github/kandinsky-5/configs"
-            config_name = "k5_lite_t2i_sft_hd.yaml"
-            config_path = os.path.join(config_dir, config_name)
-
-    return _get_t2i_pipeline_helper(config_path, device, offload)
+    return _get_pipeline("t2i", variant, config_path, device, offload)
 
 
-@rp.memoized
-def _get_i2i_pipeline_helper(config_path: str, device: str, offload: bool):
-    """Helper to load and cache I2I pipeline."""
-    _ensure_kandinsky_installed()
-    _disable_warnings()
-
-    from kandinsky import get_I2I_pipeline
-
-    device_map = {"dit": device, "vae": device, "text_embedder": device}
-
-    return get_I2I_pipeline(
-        device_map=device_map,
-        conf_path=config_path,
-        offload=offload,
-    )
-
-
-def get_i2i_pipeline(
-    config_path: str = None,
-    model_path: str = None,
-    device: str = None,
-    offload: bool = False,
-):
+def get_i2i_pipeline(variant: str = "lite", config_path: str = None, device: str = None, offload: bool = False):
     """
     Get an image-to-image pipeline.
 
     Args:
+        variant: "lite" or "pro"
         config_path: Path to config YAML
-        model_path: Path to model weights
         device: Device to use (auto-selected if None)
         offload: Whether to offload models to CPU
 
     Returns:
         Kandinsky5I2IPipeline
     """
-    if device is None:
-        device = str(_default_device())
-
-    if config_path is None:
-        config_dir = "/root/CleanCode/Github/kandinsky-5/configs_local"
-        config_name = "k5_lite_i2i_sft_hd_local.yaml"
-        config_path = os.path.join(config_dir, config_name)
-
-        if not os.path.exists(config_path):
-            config_dir = "/root/CleanCode/Github/kandinsky-5/configs"
-            config_name = "k5_lite_i2i_sft_hd.yaml"
-            config_path = os.path.join(config_dir, config_name)
-
-    return _get_i2i_pipeline_helper(config_path, device, offload)
+    return _get_pipeline("i2i", variant, config_path, device, offload)
 
 
 def text_to_video(
     prompt: str,
-    model_type: str = "lite",
+    variant: str = "lite",
     width: int = 768,
     height: int = 512,
     duration: int = 5,
@@ -537,7 +446,7 @@ def text_to_video(
 
     Args:
         prompt: Text description of the video to generate
-        model_type: "lite" or "pro"
+        variant: "lite" or "pro"
         width: Video width in pixels (512, 640, 768, 896, 1024, 1152, 1280)
         height: Video height in pixels (512, 640, 768, 896, 1024, 1152, 1280)
         duration: Video duration in seconds (default 5)
@@ -565,7 +474,7 @@ def text_to_video(
         torch.cuda.manual_seed(seed)
 
     pipe = get_t2v_pipeline(
-        model_type=model_type,
+        variant=variant,
         device=device,
         offload=offload,
     )
@@ -596,7 +505,7 @@ def text_to_video(
 def image_to_video(
     image,
     prompt: str,
-    model_type: str = "lite",
+    variant: str = "lite",
     duration: int = 5,
     num_steps: int = None,
     guidance_weight: float = None,
@@ -612,7 +521,7 @@ def image_to_video(
     Args:
         image: Input image (path, numpy array, PIL image, or torch tensor)
         prompt: Text description of how to animate the image
-        model_type: "lite" (pro not available for i2v)
+        variant: "lite" (pro not available for i2v)
         duration: Video duration in seconds (default 5)
         num_steps: Number of diffusion steps
         guidance_weight: CFG weight
@@ -640,7 +549,7 @@ def image_to_video(
     image_pil = _load_image(image)
 
     pipe = get_i2v_pipeline(
-        model_type=model_type,
+        variant=variant,
         device=device,
         offload=offload,
     )

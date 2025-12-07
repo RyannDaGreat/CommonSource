@@ -56,12 +56,14 @@ __all__ = [
 PIP_REQUIREMENTS = [
     "torch",
     "torchvision",
-    "opencv-python",
+    "opencv-python",  # imports as cv2
     "einops",
     "tqdm",
-    "xformers",
-    "gitpython",
+    "gitpython",  # imports as git
+    "matplotlib",
     "numpy<2",
+    # Optional (CUDA only):
+    # "xformers",
 ]
 
 # Model configurations
@@ -81,24 +83,8 @@ MODEL_URLS = {
     "metric_vitl": "https://huggingface.co/depth-anything/Video-Depth-Anything-Large/resolve/main/metric_video_depth_anything_vitl.pth",
 }
 
-# Default paths - network drive first, can override with local path
-DEFAULT_MODEL_DIR = "/root/models/video_depth_anything"
-LOCAL_MODEL_DIR = "/models/video_depth_anything"
-
-# Global device tracking
-_video_depth_device = None
-
-
-def _default_device():
-    """
-    Get or initialize the default device for Video-Depth-Anything.
-    Uses rp.select_torch_device() to pick the best available device.
-    """
-    global _video_depth_device
-    if _video_depth_device is None:
-        _ensure_dependencies()
-        _video_depth_device = rp.select_torch_device(reserve=True)
-    return _video_depth_device
+# Default model path (set to override HuggingFace cache)
+default_model_path = None
 
 
 def get_available_models() -> dict:
@@ -115,84 +101,60 @@ def get_available_models() -> dict:
     }
 
 
-def _get_model_path(encoder: str = "vitl", metric: bool = False, model_dir: Optional[str] = None) -> str:
-    """
-    Get the local path where a model checkpoint should be stored.
-
-    Args:
-        encoder: Model encoder type ('vits', 'vitb', or 'vitl')
-        metric: Whether to use metric depth model
-        model_dir: Override default model directory
-
-    Returns:
-        str: Full path to the model checkpoint file
-    """
-    if model_dir is None:
-        # Check if local drive exists and use it if so
-        if os.path.isdir("/models"):
-            model_dir = LOCAL_MODEL_DIR
-        else:
-            model_dir = DEFAULT_MODEL_DIR
-
-    prefix = "metric_video_depth_anything" if metric else "video_depth_anything"
-    filename = f"{prefix}_{encoder}.pth"
-    return os.path.join(model_dir, filename)
+def _get_cache_dir() -> str:
+    """Get the cache directory for Video-Depth-Anything models."""
+    if default_model_path:
+        return default_model_path
+    return os.path.join(os.path.expanduser("~"), ".cache", "video_depth_anything")
 
 
 def download_model(
-    encoder: str = "vitl",
+    variant: str = "vitl",
     metric: bool = False,
-    model_dir: Optional[str] = None,
+    path: Optional[str] = None,
     force: bool = False,
 ) -> str:
     """
-    Download a Video-Depth-Anything model checkpoint.
+    Download a Video-Depth-Anything model checkpoint, or return cached path if already downloaded.
+
+    This function is idempotent - calling it multiple times with the same
+    variant/metric will not re-download. Use this to get the model path.
 
     Args:
-        encoder: Model encoder type ('vits', 'vitb', or 'vitl')
+        variant: Model variant ('vits', 'vitb', or 'vitl')
         metric: Whether to download metric depth model
-        model_dir: Directory to save the model (default: /root/models/video_depth_anything)
+        path: Directory to save the model. If None, uses ~/.cache/video_depth_anything
         force: Re-download even if file exists
 
     Returns:
-        str: Path to the downloaded model file
+        str: Path to the model file
     """
-    assert encoder in MODEL_CONFIGS, f"Invalid encoder: {encoder}. Choose from: {list(MODEL_CONFIGS.keys())}"
+    if variant not in MODEL_CONFIGS:
+        raise ValueError(f"Invalid variant: {variant}. Choose from: {list(MODEL_CONFIGS.keys())}")
 
-    model_path = _get_model_path(encoder, metric, model_dir)
-    model_dir_actual = os.path.dirname(model_path)
+    if path is None:
+        path = _get_cache_dir()
 
-    # Create directory if needed
-    os.makedirs(model_dir_actual, exist_ok=True)
+    os.makedirs(path, exist_ok=True)
+
+    prefix = "metric_video_depth_anything" if metric else "video_depth_anything"
+    filename = f"{prefix}_{variant}.pth"
+    model_path = os.path.join(path, filename)
 
     if os.path.exists(model_path) and not force:
         print(f"Model already exists at: {model_path}")
         return model_path
 
-    # Get URL
-    url_key = f"metric_{encoder}" if metric else encoder
+    url_key = f"metric_{variant}" if metric else variant
     url = MODEL_URLS[url_key]
 
-    print(f"Downloading {'metric ' if metric else ''}Video-Depth-Anything {encoder.upper()} model...")
-    print(f"URL: {url}")
+    print(f"Downloading {'metric ' if metric else ''}Video-Depth-Anything {variant.upper()} model...")
     print(f"Destination: {model_path}")
 
-    # Download with progress bar using rp
     rp.download_url(url, model_path)
 
     print(f"Download complete: {model_path}")
     return model_path
-
-
-def _ensure_dependencies():
-    """Install required dependencies if not present."""
-    rp.pip_import("numpy", auto_yes=True)
-    rp.pip_import("torch", auto_yes=True)
-    rp.pip_import("torchvision", auto_yes=True)
-    rp.pip_import("cv2", "opencv-python", auto_yes=True)
-    rp.pip_import("einops", auto_yes=True)
-    rp.pip_import("tqdm", auto_yes=True)
-    rp.pip_import("xformers", auto_yes=True)
 
 
 def _clone_video_depth_anything_repo():
@@ -218,27 +180,26 @@ def _clone_video_depth_anything_repo():
 
 
 @rp.memoized
-def _get_model_helper(model_path: str, encoder: str, metric: bool, device_str: str):
+def _get_model_helper(model_path: str, variant: str, metric: bool, device_str: str):
     """
     Load and cache a Video-Depth-Anything model.
     Results are memoized for efficiency.
 
     Args:
         model_path: Path to model checkpoint
-        encoder: Encoder type
+        variant: Model variant (vits, vitb, vitl)
         metric: Whether this is a metric depth model
         device_str: Device string (e.g., 'cuda:0', 'cpu') for cache key
 
     Returns:
         Loaded model in eval mode
     """
-    _ensure_dependencies()
     import torch
     _clone_video_depth_anything_repo()
 
     from video_depth_anything.video_depth import VideoDepthAnything
 
-    config = MODEL_CONFIGS[encoder]
+    config = MODEL_CONFIGS[variant]
     model = VideoDepthAnything(
         encoder=config["encoder"],
         features=config["features"],
@@ -249,7 +210,7 @@ def _get_model_helper(model_path: str, encoder: str, metric: bool, device_str: s
     # Load checkpoint
     if not os.path.exists(model_path):
         # Download if not present
-        download_model(encoder=encoder, metric=metric, model_dir=os.path.dirname(model_path))
+        download_model(variant=variant, metric=metric, model_dir=os.path.dirname(model_path))
 
     device = torch.device(device_str)
     state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
@@ -260,7 +221,7 @@ def _get_model_helper(model_path: str, encoder: str, metric: bool, device_str: s
 
 
 def _get_model(
-    encoder: str = "vitl",
+    variant: str = "vitl",
     metric: bool = False,
     model_path: Optional[str] = None,
     device = None,
@@ -269,7 +230,7 @@ def _get_model(
     Get a Video-Depth-Anything model, downloading if necessary.
 
     Args:
-        encoder: Model encoder type ('vits', 'vitb', or 'vitl')
+        variant: Model variant ('vits', 'vitb', or 'vitl')
         metric: Whether to use metric depth model
         model_path: Override model path
         device: Device to load model on
@@ -277,32 +238,23 @@ def _get_model(
     Returns:
         Loaded model
     """
-    _ensure_dependencies()
-    import torch
-
     if model_path is None:
-        model_path = _get_model_path(encoder, metric)
+        model_path = download_model(variant, metric)
 
-    if device is None:
-        device = _default_device()
-    else:
-        global _video_depth_device
-        _video_depth_device = device
-
-    # Convert to torch.device and then to string for memoization key
-    device = torch.device(device)
+    # Resolve device
+    device = rp.r._resolve_torch_device(device)
     device_str = str(device)
 
-    return _get_model_helper(model_path, encoder, metric, device_str)
+    return _get_model_helper(model_path, variant, metric, device_str)
 
 
-def _load_video(video, max_frames: Optional[int] = None, target_fps: Optional[int] = None):
+def _load_video(video, num_frames: Optional[int] = None, target_fps: Optional[int] = None):
     """
     Load and preprocess a video for Video-Depth-Anything.
 
     Args:
         video: Video path, URL, or array of frames (THWC)
-        max_frames: Maximum number of frames to process
+        num_frames: Number of frames to process (subsamples if video is longer)
         target_fps: Target FPS to sample at
 
     Returns:
@@ -324,8 +276,8 @@ def _load_video(video, max_frames: Optional[int] = None, target_fps: Optional[in
         video = np.stack(video, axis=0)
 
     # Subsample frames if needed
-    if max_frames is not None and len(video) > max_frames:
-        video = rp.resize_list(list(video), max_frames)
+    if num_frames is not None and len(video) > num_frames:
+        video = rp.resize_list(list(video), num_frames)
         video = np.stack(video, axis=0)
 
     return video
@@ -353,13 +305,14 @@ def _load_image(image):
 
 def estimate_video_depth(
     video,
-    encoder: str = "vitl",
+    *,
+    variant: str = "vitl",
     metric: bool = False,
-    device = None,
+    device=None,
     model_path: Optional[str] = None,
     input_size: int = 518,
     max_res: int = 1280,
-    max_frames: Optional[int] = None,
+    num_frames: Optional[int] = None,
     target_fps: Optional[int] = None,
     fp32: bool = False,
     show_progress: bool = True,
@@ -369,7 +322,7 @@ def estimate_video_depth(
 
     Args:
         video: Video as path, URL, THWC array, or list of frames
-        encoder: Model size - 'vits' (small), 'vitb' (base), or 'vitl' (large)
+        variant: Model variant - 'vits' (small), 'vitb' (base), or 'vitl' (large)
         metric: Use metric depth model (outputs real-world meters)
         device: Device to run inference on. Can be:
             - None: Auto-select best available GPU
@@ -379,7 +332,7 @@ def estimate_video_depth(
         model_path: Override default model path
         input_size: Processing resolution (default 518)
         max_res: Maximum resolution (default 1280)
-        max_frames: Maximum frames to process (None = all)
+        num_frames: Number of frames to process (None = all)
         target_fps: Target FPS for sampling (None = original)
         fp32: Use float32 instead of float16
         show_progress: Show progress bar during inference
@@ -389,7 +342,6 @@ def estimate_video_depth(
             - Relative depth: higher values = farther from camera
             - Metric depth: values in meters
     """
-    _ensure_dependencies()
     import numpy as np
     import torch
     import einops
@@ -398,11 +350,11 @@ def estimate_video_depth(
     if isinstance(device, int):
         device = f"cuda:{device}"
 
-    # Validate encoder
-    assert encoder in MODEL_CONFIGS, f"Invalid encoder: {encoder}. Choose from: {list(MODEL_CONFIGS.keys())}"
+    # Validate variant
+    assert variant in MODEL_CONFIGS, f"Invalid variant: {variant}. Choose from: {list(MODEL_CONFIGS.keys())}"
 
     # Load video
-    frames = _load_video(video, max_frames=max_frames, target_fps=target_fps)
+    frames = _load_video(video, num_frames=num_frames, target_fps=target_fps)
 
     # Validate shapes using rp
     dims = rp.validate_tensor_shapes(
@@ -414,7 +366,7 @@ def estimate_video_depth(
         print(f"Processing {dims.T} frames at {dims.H}x{dims.W}...")
 
     # Get model
-    model = _get_model(encoder=encoder, metric=metric, model_path=model_path, device=device)
+    model = _get_model(variant=variant, metric=metric, model_path=model_path, device=device)
 
     # Get actual device from model - use full device string for correct GPU targeting
     actual_device = next(model.parameters()).device
@@ -443,9 +395,10 @@ def estimate_video_depth(
 
 def estimate_image_depth(
     image,
-    encoder: str = "vitl",
+    *,
+    variant: str = "vitl",
     metric: bool = False,
-    device = None,
+    device=None,
     model_path: Optional[str] = None,
     input_size: int = 518,
     fp32: bool = False,
@@ -459,7 +412,7 @@ def estimate_image_depth(
 
     Args:
         image: Image as path, URL, HWC array, PIL Image, or torch tensor
-        encoder: Model size - 'vits' (small), 'vitb' (base), or 'vitl' (large)
+        variant: Model variant - 'vits' (small), 'vitb' (base), or 'vitl' (large)
         metric: Use metric depth model (outputs real-world meters)
         device: Device to run inference on (see estimate_video_depth for options)
         model_path: Override default model path
@@ -480,7 +433,7 @@ def estimate_image_depth(
     # Process
     depths = estimate_video_depth(
         frames,
-        encoder=encoder,
+        variant=variant,
         metric=metric,
         device=device,
         model_path=model_path,
@@ -551,7 +504,7 @@ def demo():
     video = rp.resize_list_to_fit(video, 60)  # Keep up to 60 frames
 
     print("Estimating depth...")
-    depths = vda.estimate_video_depth(video, encoder='vitl')
+    depths = vda.estimate_video_depth(video, variant='vitl')
 
     # Visualize
     depth_vis = vda.visualize_depth(depths)

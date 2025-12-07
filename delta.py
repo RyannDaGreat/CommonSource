@@ -40,9 +40,9 @@ See: https://github.com/snap-research/DELTA_densetrack3d
 import rp
 import torch
 import numpy as np
+import os
 from einops import rearrange
 from typing import Optional, Union, List, Tuple
-from pathlib import Path
 
 
 __all__ = [
@@ -83,87 +83,47 @@ MODELS = {
     },
 }
 
-# Default paths - network drive (shared) and local fallback
-DEFAULT_MODEL_DIR = Path("/root/models/delta")
-LOCAL_MODEL_DIR = Path("/models/delta")
-
-# Global device tracking
-_delta_device = None
+# Default model path
+default_model_path = os.path.join(os.path.expanduser("~"), ".cache", "delta")
 
 
-def _ensure_all_gpus_visible():
+def download_model(variant: str = "2d", path: Optional[str] = None, force: bool = False) -> str:
     """
-    Reset CUDA_VISIBLE_DEVICES to make all GPUs visible.
-    This ensures that device="cuda:N" always refers to the physical GPU N,
-    regardless of any CUDA_VISIBLE_DEVICES setting in the environment.
-    """
-    rp.set_cuda_visible_devices()  # No args = reset to all GPUs
+    Download a DELTA model checkpoint, or return cached path if already downloaded.
 
-
-def _default_delta_device():
-    """
-    Get or initialize the default device for DELTA model.
-    Uses rp.select_torch_device() to pick the best available device.
-    Note: MPS is not supported (conv2d >65536 channels limit), falls back to CPU.
-    """
-    global _delta_device
-    if _delta_device is None:
-        _delta_device = rp.select_torch_device(reserve=True)
-        # DELTA doesn't work on MPS due to conv2d channel limits
-        if 'mps' in str(_delta_device):
-            print("DELTA: MPS not supported (conv2d channel limit), using CPU")
-            _delta_device = 'cpu'
-    return _delta_device
-
-
-def _get_model_path(model_type: str = "2d", model_dir: Optional[Path] = None) -> Path:
-    """Get the path where the model should be stored/loaded from."""
-    if model_dir is not None:
-        return Path(model_dir) / MODELS[model_type]["filename"]
-
-    # Try local first, then network
-    local_path = LOCAL_MODEL_DIR / MODELS[model_type]["filename"]
-    if local_path.exists():
-        return local_path
-
-    return DEFAULT_MODEL_DIR / MODELS[model_type]["filename"]
-
-
-def download_model(model_type: str = "2d", model_dir: Optional[Path] = None, force: bool = False) -> Path:
-    """
-    Download a DELTA model checkpoint from Google Drive.
+    This function is idempotent - calling it multiple times with the same
+    variant will not re-download. Use this to get the model path.
 
     Args:
-        model_type: "2d" or "3d" - which model variant to download
-        model_dir: Directory to save the model. Defaults to /root/models/delta
+        variant: "2d" or "3d" - which model variant to download
+        path: Directory to save the model. If None, uses ~/.cache/delta
         force: If True, re-download even if file exists
 
     Returns:
-        Path to the downloaded model file
+        Path to the model file
     """
     rp.pip_import("gdown")
     import gdown
 
-    if model_type not in MODELS:
-        raise ValueError(f"model_type must be '2d' or '3d', got '{model_type}'")
+    if variant not in MODELS:
+        raise ValueError(f"variant must be '2d' or '3d', got '{variant}'")
 
-    model_info = MODELS[model_type]
+    model_info = MODELS[variant]
 
-    if model_dir is None:
-        model_dir = DEFAULT_MODEL_DIR
-    model_dir = Path(model_dir)
-    model_dir.mkdir(parents=True, exist_ok=True)
+    if path is None:
+        path = str(default_model_path)
+    os.makedirs(path, exist_ok=True)
 
-    output_path = model_dir / model_info["filename"]
+    output_path = os.path.join(path, model_info["filename"])
 
-    if output_path.exists() and not force:
+    if os.path.exists(output_path) and not force:
         print(f"Model already exists at {output_path}")
         return output_path
 
     gdrive_url = f"https://drive.google.com/uc?id={model_info['gdrive_id']}"
-    print(f"Downloading DELTA {model_type} model to {output_path}...")
+    print(f"Downloading DELTA {variant} model to {output_path}...")
 
-    gdown.download(gdrive_url, str(output_path), quiet=False)
+    gdown.download(gdrive_url, output_path, quiet=False)
 
     print(f"Download complete: {output_path}")
     return output_path
@@ -177,14 +137,14 @@ def _ensure_delta_repo():
     rp.pip_import("git", "gitpython")
     import git
 
-    repo_dir = Path("/root/models/delta/DELTA_densetrack3d")
+    repo_dir = os.path.join(default_model_path, "DELTA_densetrack3d")
 
-    if not repo_dir.exists():
+    if not os.path.exists(repo_dir):
         print("Cloning DELTA repository...")
-        repo_dir.parent.mkdir(parents=True, exist_ok=True)
+        os.makedirs(default_model_path, exist_ok=True)
         git.Repo.clone_from(
             "https://github.com/snap-research/DELTA_densetrack3d.git",
-            str(repo_dir),
+            repo_dir,
             recursive=True
         )
         print(f"Repository cloned to {repo_dir}")
@@ -192,75 +152,53 @@ def _ensure_delta_repo():
     return repo_dir
 
 
-def _install_delta_deps():
-    """Install DELTA dependencies."""
-    rp.pip_import("einops")
-    rp.pip_import("timm")
-    rp.pip_import("kornia")
-    rp.pip_import("scipy")
-    rp.pip_import("tqdm")
-    rp.pip_import("jaxtyping")
-    rp.pip_import("decord")
-    rp.pip_import("omegaconf")
-    rp.pip_import("mediapy")
-
-
 def _add_delta_to_path():
     """Add DELTA repo to Python path."""
     import sys
     repo_dir = _ensure_delta_repo()
-    repo_str = str(repo_dir)
-    if repo_str not in sys.path:
-        sys.path.insert(0, repo_str)
+    if repo_dir not in sys.path:
+        sys.path.insert(0, repo_dir)
+
+
+def _load_delta_checkpoint(model, model_path: str, model_name: str, device: torch.device):
+    """Load checkpoint into a DELTA model and prepare predictor."""
+    checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+    state_dict = checkpoint.get("model", checkpoint)
+
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if missing:
+        print(f"DELTA {model_name}: Missing keys (may be OK): {len(missing)} keys")
+    if unexpected:
+        print(f"DELTA {model_name}: Unexpected keys (may be OK): {len(unexpected)} keys")
+
+    model = model.to(device)
+    model.eval()
+    return model
+
+
+# Default model configuration shared by 2D and 3D
+_DELTA_MODEL_CONFIG = dict(
+    stride=4,
+    window_len=16,
+    add_space_attn=True,
+    num_virtual_tracks=64,
+    model_resolution=(384, 512),
+    upsample_factor=4,
+)
 
 
 @rp.memoized
 def _get_delta_model_2d(model_path: str, device: torch.device):
-    """
-    Load and cache the DELTA 2D model.
-
-    Args:
-        model_path: Path to model checkpoint
-        device: Device to load model on
-
-    Returns:
-        Tuple of (model, predictor)
-    """
-    _install_delta_deps()
+    """Load and cache the DELTA 2D model."""
     _add_delta_to_path()
 
     from densetrack3d.models.densetrack3d.densetrack2d import DenseTrack2D
     from densetrack3d.models.predictor.dense_predictor2d import DensePredictor2D
 
-    # Create model with default config
-    model = DenseTrack2D(
-        stride=4,
-        window_len=16,
-        add_space_attn=True,
-        num_virtual_tracks=64,
-        model_resolution=(384, 512),
-        upsample_factor=4,
-    )
+    model = DenseTrack2D(**_DELTA_MODEL_CONFIG)
+    model = _load_delta_checkpoint(model, model_path, "2D", device)
 
-    # Load checkpoint
-    checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
-    if "model" in checkpoint:
-        state_dict = checkpoint["model"]
-    else:
-        state_dict = checkpoint
-
-    # Load with strict=False to handle minor version differences
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    if missing:
-        print(f"DELTA 2D: Missing keys (may be OK): {len(missing)} keys")
-    if unexpected:
-        print(f"DELTA 2D: Unexpected keys (may be OK): {len(unexpected)} keys")
-
-    model = model.to(device)
-    model.eval()
-
-    predictor = DensePredictor2D(model=model)
-    predictor = predictor.to(device)
+    predictor = DensePredictor2D(model=model).to(device)
     predictor.eval()
 
     return model, predictor
@@ -268,106 +206,40 @@ def _get_delta_model_2d(model_path: str, device: torch.device):
 
 @rp.memoized
 def _get_delta_model_3d(model_path: str, device: torch.device):
-    """
-    Load and cache the DELTA 3D model.
-
-    Args:
-        model_path: Path to model checkpoint
-        device: Device to load model on
-
-    Returns:
-        Tuple of (model, predictor)
-    """
-    _install_delta_deps()
+    """Load and cache the DELTA 3D model."""
     _add_delta_to_path()
 
     from densetrack3d.models.densetrack3d.densetrack3d import DenseTrack3D
     from densetrack3d.models.predictor.dense_predictor import DensePredictor3D
 
-    # Create model with default config
-    model = DenseTrack3D(
-        stride=4,
-        window_len=16,
-        add_space_attn=True,
-        num_virtual_tracks=64,
-        model_resolution=(384, 512),
-        upsample_factor=4,
-    )
+    model = DenseTrack3D(**_DELTA_MODEL_CONFIG)
+    model = _load_delta_checkpoint(model, model_path, "3D", device)
 
-    # Load checkpoint
-    checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
-    if "model" in checkpoint:
-        state_dict = checkpoint["model"]
-    else:
-        state_dict = checkpoint
-
-    # Load with strict=False to handle minor version differences
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    if missing:
-        print(f"DELTA 3D: Missing keys (may be OK): {len(missing)} keys")
-    if unexpected:
-        print(f"DELTA 3D: Unexpected keys (may be OK): {len(unexpected)} keys")
-
-    model = model.to(device)
-    model.eval()
-
-    predictor = DensePredictor3D(model=model)
-    predictor = predictor.to(device)
+    predictor = DensePredictor3D(model=model).to(device)
     predictor.eval()
 
     return model, predictor
 
 
+def _resolve_delta_device(device):
+    """Resolve device, handling MPS fallback to CPU."""
+    return rp.r._resolve_torch_device(device, fallback_mps_to_cpu=True)
+
+
 def _get_delta_2d(model_path: Optional[str] = None, device=None):
     """Get the DELTA 2D model and predictor."""
-    # Ensure all GPUs are visible so device="cuda:N" always means physical GPU N
-    _ensure_all_gpus_visible()
-
     if model_path is None:
-        model_path = _get_model_path("2d")
-        if not Path(model_path).exists():
-            model_path = download_model("2d")
-
-    model_path = str(model_path)
-
-    if device is None:
-        device = _default_delta_device()
-    else:
-        global _delta_device
-        # Force CPU for MPS due to conv2d channel limit
-        if 'mps' in str(device):
-            print("DELTA: MPS not supported (conv2d channel limit), using CPU")
-            device = 'cpu'
-        _delta_device = device
-    device = torch.device(device)
-
-    return _get_delta_model_2d(model_path, device)
+        model_path = download_model("2d")
+    device = _resolve_delta_device(device)
+    return _get_delta_model_2d(str(model_path), device)
 
 
 def _get_delta_3d(model_path: Optional[str] = None, device=None):
     """Get the DELTA 3D model and predictor."""
-    # Ensure all GPUs are visible so device="cuda:N" always means physical GPU N
-    _ensure_all_gpus_visible()
-
     if model_path is None:
-        model_path = _get_model_path("3d")
-        if not Path(model_path).exists():
-            model_path = download_model("3d")
-
-    model_path = str(model_path)
-
-    if device is None:
-        device = _default_delta_device()
-    else:
-        global _delta_device
-        # Force CPU for MPS due to conv2d channel limit
-        if 'mps' in str(device):
-            print("DELTA: MPS not supported (conv2d channel limit), using CPU")
-            device = 'cpu'
-        _delta_device = device
-    device = torch.device(device)
-
-    return _get_delta_model_3d(model_path, device)
+        model_path = download_model("3d")
+    device = _resolve_delta_device(device)
+    return _get_delta_model_3d(str(model_path), device)
 
 
 def _load_video(video, num_frames: Optional[int] = None) -> np.ndarray:
@@ -440,10 +312,10 @@ def _video_to_tensor(video: np.ndarray, device: torch.device) -> torch.Tensor:
 def track_video_dense_2d(
     video,
     *,
-    query_frame: int = 0,
-    num_frames: Optional[int] = None,
     device=None,
     model_path: Optional[str] = None,
+    query_frame: int = 0,
+    num_frames: Optional[int] = None,
     use_fp16: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
@@ -451,10 +323,10 @@ def track_video_dense_2d(
 
     Args:
         video: Video as path, URL, or list of frames (numpy arrays)
-        query_frame: Frame index to use as reference (default 0 = first frame)
-        num_frames: Number of frames to process (None = all frames)
         device: Device to run inference on (e.g., 'cuda:0', 'cpu')
         model_path: Optional path to model checkpoint
+        query_frame: Frame index to use as reference (default 0 = first frame)
+        num_frames: Number of frames to process (None = all frames)
         use_fp16: Use half precision for lower memory usage
 
     Returns:
@@ -529,11 +401,11 @@ def track_video_sparse_2d(
     video,
     points: Optional[np.ndarray] = None,
     *,
+    device=None,
+    model_path: Optional[str] = None,
     query_frame: int = 0,
     num_frames: Optional[int] = None,
     grid_size: int = 20,
-    device=None,
-    model_path: Optional[str] = None,
     use_fp16: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
@@ -542,11 +414,11 @@ def track_video_sparse_2d(
     Args:
         video: Video as path, URL, or list of frames
         points: Nx2 array of (x, y) coordinates to track. If None, uses a grid.
+        device: Device to run inference on
+        model_path: Optional path to model checkpoint
         query_frame: Frame index to use as reference (default 0)
         num_frames: Number of frames to process (None = all)
         grid_size: If points is None, create a grid_size x grid_size grid of points
-        device: Device to run inference on
-        model_path: Optional path to model checkpoint
         use_fp16: Use half precision for lower memory
 
     Returns:
@@ -624,10 +496,10 @@ def track_video_dense_3d(
     video,
     depth: Optional[np.ndarray] = None,
     *,
-    query_frame: int = 0,
-    num_frames: Optional[int] = None,
     device=None,
     model_path: Optional[str] = None,
+    query_frame: int = 0,
+    num_frames: Optional[int] = None,
     use_fp16: bool = False,
     intrinsics: Optional[np.ndarray] = None,
 ) -> dict:
@@ -637,10 +509,10 @@ def track_video_dense_3d(
     Args:
         video: Video as path, URL, or list of frames
         depth: (T, H, W) depth maps. If None, will estimate using UniDepth.
-        query_frame: Frame index to use as reference (default 0)
-        num_frames: Number of frames to process (None = all)
         device: Device to run inference on
         model_path: Optional path to model checkpoint
+        query_frame: Frame index to use as reference (default 0)
+        num_frames: Number of frames to process (None = all)
         use_fp16: Use half precision for lower memory
         intrinsics: Optional (3, 3) camera intrinsics matrix
 
@@ -735,11 +607,11 @@ def track_video_sparse_3d(
     depth: np.ndarray,
     points: Optional[np.ndarray] = None,
     *,
+    device=None,
+    model_path: Optional[str] = None,
     query_frame: int = 0,
     num_frames: Optional[int] = None,
     grid_size: int = 20,
-    device=None,
-    model_path: Optional[str] = None,
     use_fp16: bool = False,
     intrinsics: Optional[np.ndarray] = None,
 ) -> dict:
@@ -750,11 +622,11 @@ def track_video_sparse_3d(
         video: Video as path, URL, or list of frames
         depth: (T, H, W) depth maps
         points: Nx2 array of (x, y) coordinates to track. If None, uses a grid.
+        device: Device to run inference on
+        model_path: Optional path to model checkpoint
         query_frame: Frame index to use as reference
         num_frames: Number of frames to process
         grid_size: If points is None, create a grid_size x grid_size grid
-        device: Device to run inference on
-        model_path: Optional path to model checkpoint
         use_fp16: Use half precision
         intrinsics: Optional camera intrinsics matrix
 

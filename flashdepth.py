@@ -109,89 +109,8 @@ _MAMBA_AVAILABLE = None
 # HuggingFace repository
 HF_REPO = "Eyeline-Labs/FlashDepth"
 
-# Default paths - network drive first, can override with local path
-DEFAULT_MODEL_DIR = "/root/models/flashdepth"
-LOCAL_MODEL_DIR = "/models/flashdepth"
-
-# Global device tracking
-_flashdepth_device = None
-
-
-def _resolve_device(device: Optional[Union[str, torch.device, int]]) -> torch.device:
-    """
-    Resolve device specification to a torch.device.
-
-    Handles the complexity of GPU selection when CUDA_VISIBLE_DEVICES may be set.
-    When user specifies an int (physical GPU index), we ensure that GPU is used
-    regardless of CUDA_VISIBLE_DEVICES.
-
-    Args:
-        device: Device specification:
-            - None: Auto-select best available GPU via rp.select_torch_device
-            - int: Physical GPU index (e.g., 3 means GPU 3)
-            - str: Device string (e.g., 'cuda:0', 'cpu')
-            - torch.device: PyTorch device object
-
-    Returns:
-        torch.device: Resolved device
-    """
-    global _flashdepth_device
-
-    if device is None:
-        # Auto-select using rp
-        if _flashdepth_device is None:
-            _flashdepth_device = rp.select_torch_device(reserve=True)
-        return torch.device(_flashdepth_device)
-
-    if isinstance(device, int):
-        # User specified physical GPU index
-        # Check if CUDA_VISIBLE_DEVICES is restricting our view
-        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", None)
-
-        if cuda_visible is not None:
-            # CUDA_VISIBLE_DEVICES is set - need to map physical to logical
-            visible_gpus = [int(x.strip()) for x in cuda_visible.split(",") if x.strip()]
-
-            if device in visible_gpus:
-                # The requested GPU is visible - find its logical index
-                logical_idx = visible_gpus.index(device)
-                resolved = torch.device(f"cuda:{logical_idx}")
-            else:
-                # The requested GPU is NOT in the visible list
-                # Add it to CUDA_VISIBLE_DEVICES (modifies environment)
-                new_visible = f"{cuda_visible},{device}"
-                os.environ["CUDA_VISIBLE_DEVICES"] = new_visible
-                # Logical index is at the end
-                logical_idx = len(visible_gpus)
-                resolved = torch.device(f"cuda:{logical_idx}")
-                print(f"Note: Added GPU {device} to CUDA_VISIBLE_DEVICES (now: {new_visible})")
-        else:
-            # No restriction - direct mapping
-            resolved = torch.device(f"cuda:{device}")
-
-        _flashdepth_device = resolved
-        return resolved
-
-    if isinstance(device, str):
-        _flashdepth_device = device
-        return torch.device(device)
-
-    if isinstance(device, torch.device):
-        _flashdepth_device = device
-        return device
-
-    raise ValueError(f"Invalid device type: {type(device)}. Expected int, str, or torch.device.")
-
-
-def _default_device():
-    """
-    Get or initialize the default device for FlashDepth.
-    Uses rp.select_torch_device() to pick the best available device.
-    """
-    global _flashdepth_device
-    if _flashdepth_device is None:
-        _flashdepth_device = rp.select_torch_device(reserve=True)
-    return _flashdepth_device
+# Default model path (set to override HuggingFace cache)
+default_model_path = None
 
 
 def get_available_models() -> dict:
@@ -220,93 +139,64 @@ def get_available_models() -> dict:
     }
 
 
-def _get_model_path(variant: str = "large", model_dir: Optional[str] = None) -> str:
-    """
-    Get the local path where a model checkpoint should be stored.
-
-    Args:
-        variant: Model variant ('full', 'large', or 'small')
-        model_dir: Override default model directory
-
-    Returns:
-        str: Full path to the model checkpoint file
-    """
-    if model_dir is None:
-        # Check if local drive exists and use it if so
-        if os.path.isdir("/models"):
-            model_dir = LOCAL_MODEL_DIR
-        else:
-            model_dir = DEFAULT_MODEL_DIR
-
-    config = MODEL_CONFIGS[variant]
-    return os.path.join(model_dir, variant, config["checkpoint"])
-
-
 def download_model(
     variant: str = "large",
-    model_dir: Optional[str] = None,
+    path: Optional[str] = None,
     force: bool = False,
 ) -> str:
     """
-    Download a FlashDepth model checkpoint from HuggingFace.
+    Download a FlashDepth model checkpoint, or return cached path if already downloaded.
+
+    This function is idempotent - calling it multiple times with the same
+    variant will not re-download. Use this to get the model path.
 
     Args:
         variant: Model variant ('full', 'large', or 'small')
-        model_dir: Directory to save the model (default: /root/models/flashdepth)
+        path: Directory to save the model. If None, uses HuggingFace cache.
         force: Re-download even if file exists
 
     Returns:
-        str: Path to the downloaded model file
+        str: Path to the model file
     """
-    assert variant in MODEL_CONFIGS, f"Invalid variant: {variant}. Choose from: {list(MODEL_CONFIGS.keys())}"
+    if variant not in MODEL_CONFIGS:
+        raise ValueError(f"Invalid variant: {variant}. Choose from: {list(MODEL_CONFIGS.keys())}")
 
-    model_path = _get_model_path(variant, model_dir)
-    model_dir_actual = os.path.dirname(model_path)
-
-    # Create directory if needed
-    os.makedirs(model_dir_actual, exist_ok=True)
-
-    if os.path.exists(model_path) and not force:
-        print(f"Model already exists at: {model_path}")
-        return model_path
-
-    # Get HuggingFace path
-    config = MODEL_CONFIGS[variant]
-    hf_path = config["hf_path"]
-
-    print(f"Downloading FlashDepth {variant} model...")
-    print(f"From: {HF_REPO}/{hf_path}")
-    print(f"To: {model_path}")
-
-    # Download from HuggingFace using huggingface_hub
     rp.pip_import("huggingface_hub")
     from huggingface_hub import hf_hub_download
 
-    downloaded_path = hf_hub_download(
+    config = MODEL_CONFIGS[variant]
+    hf_path = config["hf_path"]
+
+    # Use global override if set
+    if path is None:
+        path = default_model_path
+
+    # Check if already exists when path is specified
+    if path:
+        model_path = os.path.join(path, variant, config["checkpoint"])
+        if os.path.exists(model_path) and not force:
+            print(f"Model already exists at: {model_path}")
+            return model_path
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        print(f"Downloading FlashDepth {variant} model to {model_path}...")
+
+    # Single download call
+    downloaded = hf_hub_download(
         repo_id=HF_REPO,
         filename=hf_path,
-        local_dir=model_dir if model_dir else (LOCAL_MODEL_DIR if os.path.isdir("/models") else DEFAULT_MODEL_DIR),
-        local_dir_use_symlinks=False,
+        local_dir=path,
+        local_dir_use_symlinks=False if path else True,
+        force_download=force,
     )
 
-    # Move to expected location if needed
-    if downloaded_path != model_path:
-        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+    # Move to expected location if needed (only when path is specified)
+    if path and downloaded != model_path:
         import shutil
-        shutil.move(downloaded_path, model_path)
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        shutil.move(downloaded, model_path)
+        return model_path
 
-    print(f"Download complete: {model_path}")
-    return model_path
-
-
-def _ensure_dependencies():
-    """Install required dependencies if not present."""
-    rp.pip_import("torch")
-    rp.pip_import("torchvision")
-    rp.pip_import("cv2", "opencv-python")
-    rp.pip_import("einops")
-    rp.pip_import("tqdm")
-    rp.pip_import("timm")
+    return downloaded
 
 
 def _clone_flashdepth_repo():
@@ -439,7 +329,6 @@ def _get_model_helper(model_path: str, variant: str, device: torch.device):
     Returns:
         Loaded model in eval mode
     """
-    _ensure_dependencies()
     repo_path = _clone_flashdepth_repo()
 
     # Try to set up Mamba, but continue without it if unavailable
@@ -475,7 +364,7 @@ def _get_model_helper(model_path: str, variant: str, device: torch.device):
 
     # Load checkpoint
     if not os.path.exists(model_path):
-        download_model(variant=variant, model_dir=os.path.dirname(os.path.dirname(model_path)))
+        model_path = download_model(variant=variant)
 
     print(f"Loading checkpoint from: {model_path}")
     state_dict = torch.load(model_path, map_location="cpu")
@@ -520,21 +409,21 @@ def _get_model(
         Loaded model
     """
     if model_path is None:
-        model_path = _get_model_path(variant)
+        model_path = download_model(variant)
 
-    # Resolve device using our helper that handles CUDA_VISIBLE_DEVICES
-    resolved_device = _resolve_device(device)
+    # Resolve device
+    resolved_device = rp.r._resolve_torch_device(device)
 
     return _get_model_helper(model_path, variant, resolved_device)
 
 
-def _load_video(video, max_frames: Optional[int] = None) -> np.ndarray:
+def _load_video(video, num_frames: Optional[int] = None) -> np.ndarray:
     """
     Load and preprocess a video for FlashDepth.
 
     Args:
         video: Video path, URL, or array of frames (THWC)
-        max_frames: Maximum number of frames to process
+        num_frames: Number of frames to process (subsamples if video is longer)
 
     Returns:
         np.ndarray: Video frames as THWC uint8 array
@@ -553,8 +442,8 @@ def _load_video(video, max_frames: Optional[int] = None) -> np.ndarray:
         video = np.stack(video, axis=0)
 
     # Subsample frames if needed
-    if max_frames is not None and len(video) > max_frames:
-        video = rp.resize_list(list(video), max_frames)
+    if num_frames is not None and len(video) > num_frames:
+        video = rp.resize_list(list(video), num_frames)
         video = np.stack(video, axis=0)
 
     return video
@@ -634,11 +523,12 @@ def _preprocess_frames(frames: np.ndarray, target_size: int = 518) -> torch.Tens
 
 def estimate_video_depth(
     video,
+    *,
     variant: str = "large",
     device: Optional[Union[str, torch.device, int]] = None,
     model_path: Optional[str] = None,
     input_size: int = 518,
-    max_frames: Optional[int] = None,
+    num_frames: Optional[int] = None,
     show_progress: bool = True,
 ) -> np.ndarray:
     """
@@ -654,7 +544,7 @@ def estimate_video_depth(
             - torch.device: PyTorch device object
         model_path: Override default model path
         input_size: Processing resolution (default 518)
-        max_frames: Maximum frames to process (None = all)
+        num_frames: Number of frames to process (None = all)
         show_progress: Show progress during inference
 
     Returns:
@@ -667,7 +557,7 @@ def estimate_video_depth(
     assert variant in MODEL_CONFIGS, f"Invalid variant: {variant}. Choose from: {list(MODEL_CONFIGS.keys())}"
 
     # Load video
-    frames = _load_video(video, max_frames=max_frames)
+    frames = _load_video(video, num_frames=num_frames)
 
     # Validate shapes using rp
     dims = rp.validate_tensor_shapes(
@@ -746,6 +636,7 @@ def estimate_video_depth(
 
 def estimate_image_depth(
     image,
+    *,
     variant: str = "large",
     device: Optional[Union[str, torch.device, int]] = None,
     model_path: Optional[str] = None,
