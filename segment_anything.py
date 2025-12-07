@@ -126,6 +126,34 @@ def _get_checkpoint_path(model_path=None):
     return download_model()
 
 
+def _get_bpe_vocab_path():
+    """
+    Get path to the BPE vocabulary file, downloading if needed.
+
+    The sam3 package requires the CLIP BPE vocabulary file for text encoding.
+    This file is from OpenAI's CLIP repository.
+    """
+    import os
+
+    # Store in the sam3 package's expected location
+    sam3_dir = os.path.dirname(__import__("sam3").__file__)
+    assets_dir = os.path.join(os.path.dirname(sam3_dir), "assets")
+    bpe_path = os.path.join(assets_dir, "bpe_simple_vocab_16e6.txt.gz")
+
+    if os.path.exists(bpe_path):
+        return bpe_path
+
+    # Download from OpenAI's CLIP repository
+    print(f"Downloading BPE vocabulary file to {bpe_path}...")
+    os.makedirs(assets_dir, exist_ok=True)
+
+    url = "https://github.com/openai/CLIP/raw/main/clip/bpe_simple_vocab_16e6.txt.gz"
+    rp.download_url(url, bpe_path)
+
+    print(f"Downloaded BPE vocabulary to {bpe_path}")
+    return bpe_path
+
+
 @rp.memoized
 def _get_sam3_model_helper(checkpoint_path, device):
     """Load the SAM3 model using the official sam3 package."""
@@ -149,11 +177,15 @@ def _get_sam3_model_helper(checkpoint_path, device):
     else:
         sam3_device = device
 
+    # Get the BPE vocabulary path (downloads if needed)
+    bpe_path = _get_bpe_vocab_path()
+
     model = build_sam3_image_model(
         checkpoint_path=checkpoint_path,
         load_from_HF=False,
         device=sam3_device,
         eval_mode=True,
+        bpe_path=bpe_path,
     )
 
     # Create processor with the correct device
@@ -487,9 +519,10 @@ def segment_video(video, prompt, *, device=None, model_path=None,
             frame_path = os.path.join(frame_dir, f"{i:06d}.jpg")
             frame.save(frame_path)
 
+        bpe_path = _get_bpe_vocab_path()
         video_predictor = build_sam3_video_predictor(
             checkpoint_path=checkpoint_path,
-            load_from_HF=False,
+            bpe_path=bpe_path,
         )
 
         response = video_predictor.handle_request(
@@ -575,7 +608,7 @@ def demo():
     """Run this demo to test SAM3 capabilities."""
     import numpy as np
 
-    rp.git_import('CommonSource', pull=True)
+    rp.git_import('CommonSource', pull=False)
     import rp.git.CommonSource.segment_anything as sam
 
     print("=== SAM3 Image Segmentation Demo ===")
