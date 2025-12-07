@@ -41,6 +41,7 @@ __all__ = [
     "download_model",
     "default_model_path",
     "huggingface_model_id",
+    "demo",
 ]
 
 PIP_REQUIREMENTS = [

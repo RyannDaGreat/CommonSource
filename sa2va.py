@@ -42,7 +42,8 @@ __all__ = [
     "chat_image",
     "chat_video",
     "segment_image",
-    "segment_video"
+    "segment_video",
+    "demo",
 ]
 
 
@@ -372,3 +373,7 @@ def demo():
     )
     rp.display_video(preview_video, framerate=30)
 
+
+if __name__ == "__main__":
+    import fire
+    fire.Fire({name: globals()[name] for name in __all__})

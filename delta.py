@@ -52,6 +52,7 @@ __all__ = [
     "track_video_sparse_3d",
     "download_model",
     "visualize_tracks_2d",
+    "demo",
 ]
 
 PIP_REQUIREMENTS = [

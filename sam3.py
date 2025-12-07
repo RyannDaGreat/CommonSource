@@ -45,6 +45,7 @@ __all__ = [
     "visualize_segmentation",
     "download_model",
     "default_model_path",
+    "demo",
 ]
 
 PIP_REQUIREMENTS = [

@@ -55,6 +55,7 @@ __all__ = [
     "estimate_depth_multiview",
     "download_model",
     "default_model_path",
+    "demo",
 ]
 
 PIP_REQUIREMENTS = [
@@ -566,4 +567,4 @@ def demo(image=None, output="/tmp/da3_demo.jpg", device=None, variant="small"):
 
 if __name__ == "__main__":
     import fire
-    fire.Fire({name: globals()[name] for name in __all__ + ["demo"]})
+    fire.Fire({name: globals()[name] for name in __all__})

@@ -45,6 +45,7 @@ __all__ = [
     "get_i2i_pipeline",
     "download_models",
     "default_model_path",
+    "demo",
 ]
 
 PIP_REQUIREMENTS = [
@@ -702,6 +703,28 @@ def image_to_image(
     if result is not None:
         return rp.as_numpy_image(result)
     return result
+
+
+def demo():
+    """
+    Run a quick demo of Kandinsky text-to-image generation.
+    """
+    prompt = "A fantasy castle on a floating island, dramatic sunset lighting"
+    print("Generating image with prompt: %s" % prompt)
+
+    image = text_to_image(prompt)
+    print("Generated image shape: %s" % str(image.shape))
+
+    output = "/tmp/kandinsky_demo.jpg"
+    rp.save_image(image, output)
+    print("Saved to: %s" % output)
+
+    try:
+        rp.display_image(image)
+    except Exception:
+        pass
+
+    return image
 
 
 if __name__ == "__main__":
