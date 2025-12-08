@@ -14,21 +14,33 @@ Input formats:
 - Videos: List of frames, path, or URL
 - Text: String prompts for concept to segment (e.g., "person", "car", "dog")
 
+All segment functions return an EasyDict with:
+    - mask: HW (or THW for video) bool - Combined mask (OR of all instances)
+    - masks: NHW (or TNHW for video) bool - Per-instance binary masks
+    - boxes: Nx4 np.ndarray - Bounding boxes in XYXY format (images only)
+    - scores: N np.ndarray - Confidence scores (images only)
+
 Python API Example:
     # Segment all instances of a concept in an image
-    masks, boxes, scores = segment_image("photo.jpg", "person")
+    result = segment_image("photo.jpg", "person")
+    result.mask   # HW combined mask
+    result.masks  # NHW per-instance masks
+    result.boxes  # Nx4 bounding boxes
+    result.scores # N confidence scores
 
     # Segment with point prompts
-    masks, boxes, scores = segment_image_points("photo.jpg", points=[[100, 200]], labels=[1])
+    result = segment_image_points("photo.jpg", points=[[100, 200]], labels=[1])
 
     # Segment with box prompts
-    masks, boxes, scores = segment_image_boxes("photo.jpg", boxes=[[10, 10, 200, 200]])
+    result = segment_image_boxes("photo.jpg", boxes=[[10, 10, 200, 200]])
 
     # Segment and track objects in video
-    results = segment_video("video.mp4", "person")
+    result = segment_video("video.mp4", "person")
+    result.mask   # THW combined mask per frame
+    result.masks  # TNHW per-frame per-instance masks
 
 Module settings:
-    sam3.USE_MIRROR = True   # Use community mirror (default) vs official facebook/sam3
+    sam3.MODEL_ID = "1038lab/sam3"  # Community mirror (default), or "facebook/sam3" (requires auth)
     sam3.default_model_path = None  # Override HuggingFace cache location
 
 See: https://huggingface.co/facebook/sam3
@@ -54,17 +66,13 @@ PIP_REQUIREMENTS = [
     "sam3",
 ]
 
-# Model paths and identifiers
-MIRROR_MODEL_ID = "1038lab/sam3"
-MIRROR_WEIGHTS_FILE = "sam3.pt"  # Use .pt format for compatibility with sam3 package
-OFFICIAL_MODEL_ID = "facebook/sam3"
-OFFICIAL_WEIGHTS_FILE = "sam3.pt"
+# Model configuration
+MODEL_ID = "1038lab/sam3"        # Community mirror (no auth required)
+# MODEL_ID = "facebook/sam3"    # Official (requires gated HuggingFace access)
+WEIGHTS_FILE = "sam3.pt"
 
 # Default model path (set to override HuggingFace cache)
 default_model_path = None
-
-# Use community mirror (no auth required) vs official facebook/sam3 (requires gated access)
-USE_MIRROR = True
 
 
 def download_model(path=None, force=False):
@@ -73,8 +81,6 @@ def download_model(path=None, force=False):
 
     This function is idempotent - calling it multiple times will not
     re-download. Use this to get the model path.
-
-    Uses module-level `USE_MIRROR` to determine source (default True).
 
     Args:
         path: Directory to save model. If None, uses HuggingFace cache.
@@ -92,25 +98,19 @@ def download_model(path=None, force=False):
     if path is None:
         path = default_model_path
 
-    repo_id = MIRROR_MODEL_ID if USE_MIRROR else OFFICIAL_MODEL_ID
-    filename = MIRROR_WEIGHTS_FILE if USE_MIRROR else OFFICIAL_WEIGHTS_FILE
-
     # Check if already exists when path is specified
     if path:
         os.makedirs(path, exist_ok=True)
-        weights_file = os.path.join(path, filename)
+        weights_file = os.path.join(path, WEIGHTS_FILE)
         if os.path.exists(weights_file) and not force:
             print("Model already exists at %s" % weights_file)
             return weights_file
         print("Downloading SAM3 model to %s..." % path)
 
-    if not USE_MIRROR:
-        print("Note: You must have access to facebook/sam3 on HuggingFace.")
-
     # Single download call - local_dir is None when using HuggingFace cache
     return hf_hub_download(
-        repo_id=repo_id,
-        filename=filename,
+        repo_id=MODEL_ID,
+        filename=WEIGHTS_FILE,
         local_dir=path,
         force_download=force,
     )
@@ -330,14 +330,35 @@ def _to_numpy(x, empty_shape=(0,)):
     return np.zeros(empty_shape)
 
 
+def _make_result(masks, boxes, scores):
+    """
+    Create a SegmentResult EasyDict from masks, boxes, scores arrays.
+
+    Returns:
+        EasyDict with:
+            - mask: HW bool np.ndarray - Combined mask (OR of all instance masks)
+            - masks: NHW bool np.ndarray - Binary masks for each detected instance
+            - boxes: Nx4 np.ndarray - Bounding boxes in XYXY format
+            - scores: N np.ndarray - Confidence scores for each detection
+    """
+    import numpy as np
+    height, width = masks.shape[1:3] if len(masks) > 0 else (0, 0)
+    mask = np.any(masks, axis=0) if len(masks) > 0 else np.zeros((height, width), dtype=bool)
+    return rp.EasyDict(mask=mask, masks=masks, boxes=boxes, scores=scores)
+
+
 def _empty_result(height, width):
     """Return empty segmentation result."""
     import numpy as np
-    return np.zeros((0, height, width), dtype=bool), np.zeros((0, 4)), np.array([])
+    return _make_result(
+        masks=np.zeros((0, height, width), dtype=bool),
+        boxes=np.zeros((0, 4)),
+        scores=np.array([]),
+    )
 
 
 def _process_sam3_result(result, height, width, threshold):
-    """Convert SAM3 result dict to numpy arrays and apply postprocessing."""
+    """Convert SAM3 result dict to SegmentResult EasyDict."""
     masks = _to_numpy(result.get("masks", []), (0, height, width))
     boxes = _to_numpy(result.get("boxes", []), (0, 4))
     scores = _to_numpy(result.get("scores", []))
@@ -355,7 +376,7 @@ def _process_sam3_result(result, height, width, threshold):
     if len(masks) > 0 and masks.dtype != bool:
         masks = masks > 0.5
 
-    return masks, boxes, scores
+    return _make_result(masks, boxes, scores)
 
 
 def segment_image(image, prompt, *, device=None, model_path=None, threshold=0.5):
@@ -370,7 +391,8 @@ def segment_image(image, prompt, *, device=None, model_path=None, threshold=0.5)
         threshold: Detection confidence threshold (default 0.5)
 
     Returns:
-        tuple: (masks, boxes, scores)
+        EasyDict with:
+            - mask: HW bool np.ndarray - Combined mask (OR of all instance masks)
             - masks: NHW bool np.ndarray - Binary masks for each detected instance
             - boxes: Nx4 np.ndarray - Bounding boxes in XYXY format
             - scores: N np.ndarray - Confidence scores for each detection
@@ -403,7 +425,11 @@ def segment_image_points(image, points, labels, *, device=None, model_path=None,
         point_box_size: Size of the box around each point as fraction of image (default 0.02)
 
     Returns:
-        tuple: (masks, boxes, scores)
+        EasyDict with:
+            - mask: HW bool np.ndarray - Combined mask (OR of all instance masks)
+            - masks: NHW bool np.ndarray - Binary masks for each detected instance
+            - boxes: Nx4 np.ndarray - Bounding boxes in XYXY format
+            - scores: N np.ndarray - Confidence scores for each detection
     """
     import numpy as np
 
@@ -451,7 +477,11 @@ def segment_image_boxes(image, boxes, labels=None, prompt=None, *, device=None, 
         threshold: Detection confidence threshold (default 0.5)
 
     Returns:
-        tuple: (masks, boxes, scores)
+        EasyDict with:
+            - mask: HW bool np.ndarray - Combined mask (OR of all instance masks)
+            - masks: NHW bool np.ndarray - Binary masks for each detected instance
+            - boxes: Nx4 np.ndarray - Bounding boxes in XYXY format
+            - scores: N np.ndarray - Confidence scores for each detection
     """
     import numpy as np
 
@@ -492,7 +522,7 @@ def segment_image_boxes(image, boxes, labels=None, prompt=None, *, device=None, 
     return _process_sam3_result(result, height, width, threshold)
 
 
-def segment_video(video, prompt, *, device=None, model_path=None):
+def segment_video(video, prompt, *, device=None, model_path=None, threshold=0.5):
     """
     Segment and track all instances of a concept throughout a video.
 
@@ -505,10 +535,14 @@ def segment_video(video, prompt, *, device=None, model_path=None):
             - str: Device string (e.g., 'cuda:0', 'cuda:1')
             - list/set: Multiple GPUs (e.g., [0, 1, 2] or {4, 5, 6})
         model_path: Model path to use a specific SAM3 model
+        threshold: Mask confidence threshold (default 0.5)
 
     Returns:
-        np.ndarray: Boolean mask array of shape (T, H, W) where T is number of frames.
-                    All detected objects are combined into a single mask per frame.
+        EasyDict with:
+            - mask: THW bool np.ndarray - Combined mask per frame (OR of all instances)
+            - masks: TNHW bool np.ndarray - Per-frame per-instance binary masks
+            - boxes: Empty Nx4 array (not available for video)
+            - scores: Empty N array (not available for video)
     """
     import numpy as np
 
@@ -519,7 +553,12 @@ def segment_video(video, prompt, *, device=None, model_path=None):
     frames = _load_video(video)
 
     if len(frames) == 0:
-        return np.zeros((0, 0, 0), dtype=bool)
+        return rp.EasyDict(
+            mask=np.zeros((0, 0, 0), dtype=bool),
+            masks=np.zeros((0, 0, 0, 0), dtype=bool),
+            boxes=np.zeros((0, 4)),
+            scores=np.array([]),
+        )
 
     video_predictor = _get_sam3_video_predictor(model_path, device)
 
@@ -530,7 +569,7 @@ def segment_video(video, prompt, *, device=None, model_path=None):
     session_id = response["session_id"]
 
     # Add text prompt
-    response = video_predictor.handle_request(
+    video_predictor.handle_request(
         request=dict(
             type="add_prompt",
             session_id=session_id,
@@ -540,7 +579,7 @@ def segment_video(video, prompt, *, device=None, model_path=None):
     )
 
     # Propagate through video
-    combined_masks = []
+    all_frame_masks = []
     num_frames_to_process = len(frames)
 
     # Propagate through all frames - returns a generator
@@ -557,7 +596,7 @@ def segment_video(video, prompt, *, device=None, model_path=None):
     # Get frame dimensions from first PIL image
     height, width = frames[0].size[1], frames[0].size[0]
 
-    # Process results for each frame - combine all object masks into one
+    # Process results for each frame
     for result in rp.eta(propagation, "Tracking", length=num_frames_to_process):
         outputs = result.get("outputs", {})
         masks = outputs.get("out_binary_masks", None)
@@ -565,17 +604,35 @@ def segment_video(video, prompt, *, device=None, model_path=None):
         if masks is not None and len(masks) > 0:
             if isinstance(masks, torch.Tensor):
                 masks = masks.cpu().numpy()
-            # Combine all object masks with OR (any object = True)
-            # masks shape: (num_objects, H, W)
-            frame_mask = np.any(masks, axis=0)
+            # Apply threshold and convert to bool
+            masks = masks > threshold
+            all_frame_masks.append(masks)
         else:
             # No objects detected in this frame
-            frame_mask = np.zeros((height, width), dtype=bool)
+            all_frame_masks.append(np.zeros((0, height, width), dtype=bool))
 
-        combined_masks.append(frame_mask)
+    # Pad all frames to same number of objects (max across all frames)
+    max_objects = max(m.shape[0] for m in all_frame_masks) if all_frame_masks else 0
+    if max_objects == 0:
+        masks_tnhw = np.zeros((len(frames), 0, height, width), dtype=bool)
+    else:
+        padded = []
+        for m in all_frame_masks:
+            if m.shape[0] < max_objects:
+                pad = np.zeros((max_objects - m.shape[0], height, width), dtype=bool)
+                m = np.concatenate([m, pad], axis=0)
+            padded.append(m)
+        masks_tnhw = np.stack(padded, axis=0)
 
-    # Stack into (T, H, W) array
-    return np.stack(combined_masks, axis=0)
+    # Combined mask per frame: THW
+    mask_thw = np.any(masks_tnhw, axis=1) if max_objects > 0 else np.zeros((len(frames), height, width), dtype=bool)
+
+    return rp.EasyDict(
+        mask=mask_thw,
+        masks=masks_tnhw,
+        boxes=np.zeros((0, 4)),
+        scores=np.array([]),
+    )
 
 
 def demo():
@@ -588,13 +645,13 @@ def demo():
     image = rp.load_image(image_url, use_cache=True)
     print(f"Image shape: {image.shape}")
 
-    masks, boxes, scores = sam.segment_image(image, "cat")
-    print(f"Found {len(masks)} cats")
-    print(f"Scores: {scores}")
+    result = sam.segment_image(image, "cat")
+    print(f"Found {len(result.masks)} cats")
+    print(f"Scores: {result.scores}")
 
-    if len(masks) > 0:
+    if len(result.masks) > 0:
         output_path = "/tmp/sam3_demo_output.jpg"
-        rp.save_image(sam.visualize_segmentation(image, masks, boxes), output_path)
+        rp.save_image(sam.visualize_segmentation(image, result.masks, result.boxes), output_path)
         print(f"Saved visualization to: {output_path}")
 
 
