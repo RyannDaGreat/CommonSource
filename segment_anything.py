@@ -201,6 +201,53 @@ def _get_sam3_model(model_path=None, device=None):
     return _get_sam3_model_helper(checkpoint_path, device)
 
 
+@rp.memoized
+def _get_sam3_video_predictor_helper(checkpoint_path, bpe_path, gpu_ids):
+    """Load the SAM3 video predictor (cached per GPU configuration).
+
+    Args:
+        checkpoint_path: Path to model checkpoint
+        bpe_path: Path to BPE vocab file
+        gpu_ids: Tuple of GPU indices to use (must be tuple for memoization)
+    """
+    rp.pip_import("sam3")
+    from sam3.model_builder import build_sam3_video_predictor
+
+    return build_sam3_video_predictor(
+        checkpoint_path=checkpoint_path,
+        bpe_path=bpe_path,
+        gpus_to_use=list(gpu_ids),
+    )
+
+
+def _get_sam3_video_predictor(model_path=None, device=None):
+    """
+    Get the SAM3 video predictor, downloading if needed.
+
+    Args:
+        model_path: Override model path
+        device: Device(s) to run on. Can be:
+            - None: Auto-select (cuda:0)
+            - int: Single GPU index (e.g., 0, 1, 7)
+            - str: Device string (e.g., 'cuda:0', 'cuda:1')
+            - list/set: Multiple GPUs (e.g., [0, 1, 2] or {4, 5, 6})
+
+    Returns:
+        SAM3 video predictor loaded on the specified GPU(s)
+    """
+    checkpoint_path = _get_checkpoint_path(model_path)
+    bpe_path = _get_bpe_vocab_path()
+    gpu_ids = _resolve_gpu_ids(device)
+    return _get_sam3_video_predictor_helper(checkpoint_path, bpe_path, gpu_ids)
+
+
+def _resolve_gpu_ids(device):
+    """Convert device specification(s) to a tuple of GPU index integers."""
+    if rp.is_iterable(device) and not isinstance(device, str):
+        return tuple(sorted(set(rp.r._resolve_torch_device(d).index for d in device)))
+    return (rp.r._resolve_torch_device(device).index,)
+
+
 def _load_image(image):
     """Load and preprocess an image for SAM3 model input."""
     if isinstance(image, str):
@@ -223,10 +270,12 @@ def _load_video(video, num_frames=None):
     if num_frames is not None:
         video = rp.resize_list(video, num_frames)
 
-    video = rp.as_numpy_images(video)
-    video = rp.as_rgb_images(video)
-    video = rp.as_byte_images(video)
-    video = rp.as_pil_images(video)
+    # Convert frames to PIL images with progress bar
+    video = list(video)  # Ensure it's a list
+    video = [rp.as_numpy_image(f) for f in rp.eta(video, "Loading frames")]
+    video = [rp.as_rgb_image(f) for f in video]
+    video = [rp.as_byte_image(f) for f in video]
+    video = [rp.as_pil_image(f) for f in video]
 
     return video
 
@@ -249,10 +298,15 @@ def visualize_segmentation(image, masks, boxes=None, scores=None):
     if isinstance(image, str):
         image = rp.load_image(image)
 
+    image = rp.as_numpy_image(image)
     vis = rp.as_float_image(image).copy()
 
     colors = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [1, 0, 1], [0, 1, 1]]
+    h, w = vis.shape[:2]
     for i, mask in enumerate(masks):
+        # Skip masks with mismatched dimensions
+        if mask.shape != (h, w):
+            continue
         color = colors[i % len(colors)]
         vis[mask] = vis[mask] * 0.5 + np.array(color) * 0.5
 
@@ -293,12 +347,12 @@ def _process_sam3_result(result, height, width, threshold):
     boxes = result.get("boxes", [])
     scores = result.get("scores", [])
 
-    # Convert masks to numpy
+    # Convert masks to numpy (use float() to handle BFloat16 which numpy doesn't support)
     if isinstance(masks, torch.Tensor):
-        masks = masks.cpu().numpy()
+        masks = masks.cpu().float().numpy()
     elif isinstance(masks, list) and len(masks) > 0:
         if isinstance(masks[0], torch.Tensor):
-            masks = torch.stack(masks).cpu().numpy()
+            masks = torch.stack(masks).cpu().float().numpy()
         else:
             masks = np.array(masks)
     else:
@@ -306,7 +360,7 @@ def _process_sam3_result(result, height, width, threshold):
 
     # Convert boxes to numpy
     if isinstance(boxes, torch.Tensor):
-        boxes = boxes.cpu().numpy()
+        boxes = boxes.cpu().float().numpy()
     elif isinstance(boxes, list) and len(boxes) > 0:
         boxes = np.array(boxes)
     else:
@@ -314,7 +368,7 @@ def _process_sam3_result(result, height, width, threshold):
 
     # Convert scores to numpy
     if isinstance(scores, torch.Tensor):
-        scores = scores.cpu().numpy()
+        scores = scores.cpu().float().numpy()
     elif isinstance(scores, list):
         scores = np.array(scores)
     else:
@@ -488,120 +542,89 @@ def segment_video(video, prompt, *, device=None, model_path=None,
     Args:
         video: List of frames, path, or URL
         prompt: Text prompt describing what to segment (e.g., "person")
-        device: Device to run inference on
+        device: Device(s) to run inference on. Can be:
+            - None: Auto-select (cuda:0)
+            - int: Single GPU index (e.g., 0, 1, 7)
+            - str: Device string (e.g., 'cuda:0', 'cuda:1')
+            - list/set: Multiple GPUs (e.g., [0, 1, 2] or {4, 5, 6})
         model_path: Model path to use a specific SAM3 model
         num_frames: Number of frames to process. If None, processes all frames.
         max_frames_to_track: Maximum frames to track. If None, tracks all frames.
 
     Returns:
-        dict: Results with 'masks', 'boxes', 'scores', 'object_ids' keys
+        np.ndarray: Boolean mask array of shape (T, H, W) where T is number of frames.
+                    All detected objects are combined into a single mask per frame.
     """
     import numpy as np
-    import tempfile
-    import os
 
     rp.pip_import("torch")
     import torch
-    rp.pip_import("sam3")
-    from sam3.model_builder import build_sam3_video_predictor
 
-    device = str(rp.r._resolve_torch_device(device))
-    checkpoint_path = _get_checkpoint_path(model_path)
-
+    # Load video as list of PIL images (in-memory, no disk I/O)
     frames = _load_video(video, num_frames)
 
-    # SAM3 video predictor requires frames saved to disk
-    with tempfile.TemporaryDirectory() as tmpdir:
-        frame_dir = os.path.join(tmpdir, "frames")
-        os.makedirs(frame_dir)
+    if len(frames) == 0:
+        return np.zeros((0, 0, 0), dtype=bool)
 
-        for i, frame in enumerate(frames):
-            frame_path = os.path.join(frame_dir, f"{i:06d}.jpg")
-            frame.save(frame_path)
+    video_predictor = _get_sam3_video_predictor(model_path, device)
 
-        bpe_path = _get_bpe_vocab_path()
-        video_predictor = build_sam3_video_predictor(
-            checkpoint_path=checkpoint_path,
-            bpe_path=bpe_path,
+    # Start session with PIL images directly (no disk I/O)
+    response = video_predictor.handle_request(
+        request=dict(type="start_session", resource_path=frames)
+    )
+    session_id = response["session_id"]
+
+    # Add text prompt
+    response = video_predictor.handle_request(
+        request=dict(
+            type="add_prompt",
+            session_id=session_id,
+            frame_index=0,
+            text=prompt
         )
+    )
 
-        response = video_predictor.handle_request(
-            request=dict(type="start_session", resource_path=frame_dir)
+    # Propagate through video
+    combined_masks = []
+
+    if max_frames_to_track is None:
+        max_frames_to_track = len(frames)
+
+    num_frames_to_process = min(max_frames_to_track, len(frames))
+
+    # Propagate through all frames - returns a generator
+    propagation = video_predictor.handle_stream_request(
+        request=dict(
+            type="propagate_in_video",
+            session_id=session_id,
+            start_frame_index=0,
+            max_frame_num_to_track=num_frames_to_process,
+            propagation_direction="forward",
         )
-        session_id = response["session_id"]
+    )
 
-        response = video_predictor.handle_request(
-            request=dict(
-                type="add_prompt",
-                session_id=session_id,
-                frame_index=0,
-                text=prompt
-            )
-        )
+    # Get frame dimensions from first PIL image
+    height, width = frames[0].size[1], frames[0].size[0]
 
-        # Propagate through video
-        all_masks = []
-        all_boxes = []
-        all_scores = []
-        object_ids = []
+    # Process results for each frame - combine all object masks into one
+    for result in rp.eta(propagation, "Tracking", length=num_frames_to_process):
+        outputs = result.get("outputs", {})
+        masks = outputs.get("out_binary_masks", None)
 
-        if max_frames_to_track is None:
-            max_frames_to_track = len(frames)
-
-        for frame_idx in range(min(max_frames_to_track, len(frames))):
-            response = video_predictor.handle_request(
-                request=dict(
-                    type="propagate",
-                    session_id=session_id,
-                    frame_index=frame_idx
-                )
-            )
-
-            outputs = response.get("outputs", {})
-            masks = outputs.get("masks", [])
-            boxes = outputs.get("boxes", [])
-            scores = outputs.get("scores", [])
-
+        if masks is not None and len(masks) > 0:
             if isinstance(masks, torch.Tensor):
                 masks = masks.cpu().numpy()
-            if isinstance(boxes, torch.Tensor):
-                boxes = boxes.cpu().numpy()
-            if isinstance(scores, torch.Tensor):
-                scores = scores.cpu().numpy()
+            # Combine all object masks with OR (any object = True)
+            # masks shape: (num_objects, H, W)
+            frame_mask = np.any(masks, axis=0)
+        else:
+            # No objects detected in this frame
+            frame_mask = np.zeros((height, width), dtype=bool)
 
-            all_masks.append(masks)
-            all_boxes.append(boxes)
-            all_scores.append(scores)
+        combined_masks.append(frame_mask)
 
-            if frame_idx == 0:
-                object_ids = outputs.get("object_ids", [])
-
-        # Reorganize by object
-        num_objects = len(object_ids) if object_ids else (len(all_masks[0]) if all_masks else 0)
-
-        masks_per_obj = [[] for _ in range(num_objects)]
-        boxes_per_obj = [[] for _ in range(num_objects)]
-        scores_per_obj = [[] for _ in range(num_objects)]
-
-        for frame_masks, frame_boxes, frame_scores in zip(all_masks, all_boxes, all_scores):
-            for obj_idx in range(num_objects):
-                if obj_idx < len(frame_masks):
-                    masks_per_obj[obj_idx].append(frame_masks[obj_idx])
-                    boxes_per_obj[obj_idx].append(frame_boxes[obj_idx] if obj_idx < len(frame_boxes) else np.zeros(4))
-                    scores_per_obj[obj_idx].append(frame_scores[obj_idx] if obj_idx < len(frame_scores) else 0.0)
-
-        for obj_idx in range(num_objects):
-            if masks_per_obj[obj_idx]:
-                masks_per_obj[obj_idx] = np.stack(masks_per_obj[obj_idx], axis=0)
-                boxes_per_obj[obj_idx] = np.stack(boxes_per_obj[obj_idx], axis=0)
-                scores_per_obj[obj_idx] = np.array(scores_per_obj[obj_idx])
-
-        return {
-            'masks': masks_per_obj,
-            'boxes': boxes_per_obj,
-            'scores': scores_per_obj,
-            'object_ids': list(object_ids) if object_ids else list(range(num_objects)),
-        }
+    # Stack into (T, H, W) array
+    return np.stack(combined_masks, axis=0)
 
 
 def demo():
