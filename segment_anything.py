@@ -344,7 +344,7 @@ def _make_result(masks, boxes, scores):
     import numpy as np
     height, width = masks.shape[1:3] if len(masks) > 0 else (0, 0)
     mask = np.any(masks, axis=0) if len(masks) > 0 else np.zeros((height, width), dtype=bool)
-    return rp.EasyDict(mask=mask, masks=masks, boxes=boxes, scores=scores)
+    return rp.as_easydict(mask=mask, masks=masks, boxes=boxes, scores=scores)
 
 
 def _empty_result(height, width):
@@ -553,7 +553,7 @@ def segment_video(video, prompt, *, device=None, model_path=None, threshold=0.5)
     frames = _load_video(video)
 
     if len(frames) == 0:
-        return rp.EasyDict(
+        return rp.as_easydict(
             mask=np.zeros((0, 0, 0), dtype=bool),
             masks=np.zeros((0, 0, 0, 0), dtype=bool),
             boxes=np.zeros((0, 4)),
@@ -618,7 +618,7 @@ def segment_video(video, prompt, *, device=None, model_path=None, threshold=0.5)
     # Combined mask per frame: THW
     mask_thw = np.any(masks_tnhw, axis=1)
 
-    return rp.EasyDict(
+    return rp.as_easydict(
         mask=mask_thw,
         masks=masks_tnhw,
         boxes=np.zeros((0, 4)),
