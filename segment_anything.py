@@ -253,10 +253,10 @@ def _load_image(image):
     if isinstance(image, str):
         image = rp.load_image(image)
 
-    image = rp.as_numpy_image(image)
-    image = rp.as_rgb_image(image)
-    image = rp.as_byte_image(image)
-    image = rp.as_pil_image(image)
+    image = rp.as_numpy_image(image,copy=False)
+    image = rp.as_rgb_image(image,copy=False)
+    image = rp.as_byte_image(image,copy=False)
+    image = rp.as_pil_image(image,copy=False)
 
     return image
 
@@ -266,15 +266,7 @@ def _load_video(video):
     """Load and preprocess a video for SAM3 model input."""
     if isinstance(video, str):
         video = rp.load_video(video)
-
-    # Convert frames to PIL images with progress bar
-    video = list(video)  # Ensure it's a list
-    video = [rp.as_numpy_image(f) for f in rp.eta(video, "Loading frames")]
-    video = [rp.as_rgb_image(f) for f in video]
-    video = [rp.as_byte_image(f) for f in video]
-    video = [rp.as_pil_image(f) for f in video]
-
-    return video
+    return [_load_image(f) for f in rp.eta(video, "Loading frames")]
 
 
 def visualize_segmentation(image, masks, boxes=None, scores=None):
@@ -323,60 +315,37 @@ def visualize_segmentation(image, masks, boxes=None, scores=None):
     return vis
 
 
-def _process_sam3_result(result, height, width, threshold):
-    """
-    Convert SAM3 result dict to numpy arrays and apply postprocessing.
-
-    Args:
-        result: Dict with 'masks', 'boxes', 'scores' keys
-        height: Image height for empty array fallback
-        width: Image width for empty array fallback
-        threshold: Score threshold for filtering
-
-    Returns:
-        tuple: (masks, boxes, scores) as numpy arrays
-    """
+def _to_numpy(x, empty_shape=(0,)):
+    """Convert tensor/list to numpy array."""
     import numpy as np
     rp.pip_import("torch")
     import torch
 
-    masks = result.get("masks", [])
-    boxes = result.get("boxes", [])
-    scores = result.get("scores", [])
+    if isinstance(x, torch.Tensor):
+        return x.cpu().float().numpy()
+    if isinstance(x, list) and len(x) > 0 and isinstance(x[0], torch.Tensor):
+        return torch.stack(x).cpu().float().numpy()
+    if isinstance(x, list) and len(x) > 0:
+        return np.array(x)
+    return np.zeros(empty_shape)
 
-    # Convert masks to numpy (use float() to handle BFloat16 which numpy doesn't support)
-    if isinstance(masks, torch.Tensor):
-        masks = masks.cpu().float().numpy()
-    elif isinstance(masks, list) and len(masks) > 0:
-        if isinstance(masks[0], torch.Tensor):
-            masks = torch.stack(masks).cpu().float().numpy()
-        else:
-            masks = np.array(masks)
-    else:
-        masks = np.zeros((0, height, width), dtype=bool)
 
-    # Convert boxes to numpy
-    if isinstance(boxes, torch.Tensor):
-        boxes = boxes.cpu().float().numpy()
-    elif isinstance(boxes, list) and len(boxes) > 0:
-        boxes = np.array(boxes)
-    else:
-        boxes = np.zeros((0, 4))
+def _empty_result(height, width):
+    """Return empty segmentation result."""
+    import numpy as np
+    return np.zeros((0, height, width), dtype=bool), np.zeros((0, 4)), np.array([])
 
-    # Convert scores to numpy
-    if isinstance(scores, torch.Tensor):
-        scores = scores.cpu().float().numpy()
-    elif isinstance(scores, list):
-        scores = np.array(scores)
-    else:
-        scores = np.array([])
+
+def _process_sam3_result(result, height, width, threshold):
+    """Convert SAM3 result dict to numpy arrays and apply postprocessing."""
+    masks = _to_numpy(result.get("masks", []), (0, height, width))
+    boxes = _to_numpy(result.get("boxes", []), (0, 4))
+    scores = _to_numpy(result.get("scores", []))
 
     # Filter by threshold
     if len(scores) > 0:
-        mask_thresh = scores >= threshold
-        masks = masks[mask_thresh]
-        boxes = boxes[mask_thresh]
-        scores = scores[mask_thresh]
+        keep = scores >= threshold
+        masks, boxes, scores = masks[keep], boxes[keep], scores[keep]
 
     # Squeeze extra dimensions from masks (e.g., (N, 1, H, W) -> (N, H, W))
     while len(masks) > 0 and masks.ndim > 3:
@@ -462,11 +431,7 @@ def segment_image_points(image, points, labels, *, device=None, model_path=None,
         )
 
     if result is None:
-        return (
-            np.zeros((0, height, width), dtype=bool),
-            np.zeros((0, 4)),
-            np.array([])
-        )
+        return _empty_result(height, width)
 
     return _process_sam3_result(result, height, width, threshold)
 
@@ -522,11 +487,7 @@ def segment_image_boxes(image, boxes, labels=None, prompt=None, *, device=None, 
         )
 
     if result is None:
-        return (
-            np.zeros((0, height, width), dtype=bool),
-            np.zeros((0, 4)),
-            np.array([])
-        )
+        return _empty_result(height, width)
 
     return _process_sam3_result(result, height, width, threshold)
 
@@ -619,8 +580,6 @@ def segment_video(video, prompt, *, device=None, model_path=None):
 
 def demo():
     """Run this demo to test SAM3 capabilities."""
-    import numpy as np
-
     rp.git_import('CommonSource', pull=False)
     import rp.git.CommonSource.segment_anything as sam
 
@@ -634,13 +593,8 @@ def demo():
     print(f"Scores: {scores}")
 
     if len(masks) > 0:
-        overlay = rp.as_float_image(image).copy()
-        colors = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0]]
-        for i, mask in enumerate(masks):
-            color = colors[i % len(colors)]
-            overlay[mask] = overlay[mask] * 0.5 + np.array(color) * 0.5
         output_path = "/tmp/sam3_demo_output.jpg"
-        rp.save_image(overlay, output_path)
+        rp.save_image(sam.visualize_segmentation(image, masks, boxes), output_path)
         print(f"Saved visualization to: {output_path}")
 
 
