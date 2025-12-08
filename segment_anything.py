@@ -269,67 +269,6 @@ def _load_video(video):
     return [_load_image(f) for f in rp.eta(video, "Loading frames")]
 
 
-def visualize_segmentation(image, masks, boxes=None, scores=None):
-    """
-    Create a visualization of segmentation results overlaid on an image.
-
-    Args:
-        image: Original image (np.ndarray, PIL Image, or path/URL)
-        masks: NHW bool np.ndarray of binary masks
-        boxes: Optional Nx4 np.ndarray of bounding boxes in XYXY format
-        scores: Optional N np.ndarray of confidence scores (for annotation)
-
-    Returns:
-        np.ndarray: HW3 uint8 image with mask overlays and optional boxes
-    """
-    import numpy as np
-
-    if isinstance(image, str):
-        image = rp.load_image(image)
-
-    image = rp.as_numpy_image(image)
-    vis = rp.as_float_image(image).copy()
-
-    colors = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [1, 0, 1], [0, 1, 1]]
-    h, w = vis.shape[:2]
-    for i, mask in enumerate(masks):
-        # Skip masks with mismatched dimensions
-        if mask.shape != (h, w):
-            continue
-        color = colors[i % len(colors)]
-        vis[mask] = vis[mask] * 0.5 + np.array(color) * 0.5
-
-    vis = rp.as_byte_image(vis)
-
-    if boxes is not None:
-        for i, box in enumerate(boxes):
-            x1, y1, x2, y2 = map(int, box)
-            color = [int(c * 255) for c in colors[i % len(colors)]]
-            thickness = 2
-            h, w = vis.shape[:2]
-            vis[max(0, y1):min(h, y1 + thickness), max(0, x1):min(w, x2)] = color
-            vis[max(0, y2 - thickness):min(h, y2), max(0, x1):min(w, x2)] = color
-            vis[max(0, y1):min(h, y2), max(0, x1):min(w, x1 + thickness)] = color
-            vis[max(0, y1):min(h, y2), max(0, x2 - thickness):min(w, x2)] = color
-
-    return vis
-
-
-def _to_numpy(x, empty_shape=(0,)):
-    """Convert tensor/list to numpy array."""
-    import numpy as np
-    rp.pip_import("torch")
-    import torch
-
-    if isinstance(x, torch.Tensor):
-        return x.cpu().float().numpy()
-    if isinstance(x, list) and len(x) > 0 and isinstance(x[0], torch.Tensor):
-        return torch.stack(x).cpu().float().numpy()
-    if isinstance(x, list) and len(x) > 0:
-        return np.array(x)
-    return np.zeros(empty_shape)
-
-
 def _make_result(masks, boxes, scores):
     """
     Create a SegmentResult EasyDict from masks, boxes, scores arrays.
@@ -359,9 +298,9 @@ def _empty_result(height, width):
 
 def _process_sam3_result(result, height, width, threshold):
     """Convert SAM3 result dict to SegmentResult EasyDict."""
-    masks = _to_numpy(result.get("masks", []), (0, height, width))
-    boxes = _to_numpy(result.get("boxes", []), (0, 4))
-    scores = _to_numpy(result.get("scores", []))
+    masks = rp.as_numpy_array(result.get("masks", []), (0, height, width))
+    boxes = rp.as_numpy_array(result.get("boxes", []), (0, 4))
+    scores = rp.as_numpy_array(result.get("scores", []))
 
     # Filter by threshold
     if len(scores) > 0:
@@ -438,8 +377,8 @@ def segment_image_points(image, points, labels, *, device=None, model_path=None,
     pil_image = _load_image(image)
     width, height = pil_image.size
 
-    points = np.array(points) if not isinstance(points, np.ndarray) else points
-    labels = np.array(labels) if not isinstance(labels, np.ndarray) else labels
+    points = np.array(points)
+    labels = np.array(labels)
 
     inference_state = processor.set_image(pil_image)
     processor.reset_all_prompts(inference_state)
@@ -490,7 +429,7 @@ def segment_image_boxes(image, boxes, labels=None, prompt=None, *, device=None, 
     pil_image = _load_image(image)
     width, height = pil_image.size
 
-    boxes_arr = np.array(boxes) if not isinstance(boxes, np.ndarray) else boxes
+    boxes_arr = np.array(boxes)
 
     if labels is None:
         labels = [1] * len(boxes_arr)
@@ -624,6 +563,53 @@ def segment_video(video, prompt, *, device=None, model_path=None, threshold=0.5)
         boxes=np.zeros((0, 4)),
         scores=np.array([]),
     )
+
+
+def visualize_segmentation(image, masks, boxes=None, scores=None):
+    """
+    Create a visualization of segmentation results overlaid on an image.
+
+    Args:
+        image: Original image (np.ndarray, PIL Image, or path/URL)
+        masks: NHW bool np.ndarray of binary masks
+        boxes: Optional Nx4 np.ndarray of bounding boxes in XYXY format
+        scores: Optional N np.ndarray of confidence scores (for annotation)
+
+    Returns:
+        np.ndarray: HW3 uint8 image with mask overlays and optional boxes
+    """
+    import numpy as np
+
+    if isinstance(image, str):
+        image = rp.load_image(image)
+
+    image = rp.as_numpy_image(image)
+    vis = rp.as_float_image(image).copy()
+
+    colors = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [1, 0, 1], [0, 1, 1]]
+    h, w = vis.shape[:2]
+    for i, mask in enumerate(masks):
+        # Skip masks with mismatched dimensions
+        if mask.shape != (h, w):
+            continue
+        color = colors[i % len(colors)]
+        vis[mask] = vis[mask] * 0.5 + np.array(color) * 0.5
+
+    vis = rp.as_byte_image(vis)
+
+    if boxes is not None:
+        for i, box in enumerate(boxes):
+            x1, y1, x2, y2 = map(int, box)
+            color = [int(c * 255) for c in colors[i % len(colors)]]
+            thickness = 2
+            h, w = vis.shape[:2]
+            vis[max(0, y1):min(h, y1 + thickness), max(0, x1):min(w, x2)] = color
+            vis[max(0, y2 - thickness):min(h, y2), max(0, x1):min(w, x2)] = color
+            vis[max(0, y1):min(h, y2), max(0, x1):min(w, x1 + thickness)] = color
+            vis[max(0, y1):min(h, y2), max(0, x2 - thickness):min(w, x2)] = color
+
+    return vis
+
 
 
 def demo():
