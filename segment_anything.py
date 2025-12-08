@@ -262,13 +262,10 @@ def _load_image(image):
 
 
 
-def _load_video(video, num_frames=None):
+def _load_video(video):
     """Load and preprocess a video for SAM3 model input."""
     if isinstance(video, str):
         video = rp.load_video(video)
-
-    if num_frames is not None:
-        video = rp.resize_list(video, num_frames)
 
     # Convert frames to PIL images with progress bar
     video = list(video)  # Ensure it's a list
@@ -534,8 +531,7 @@ def segment_image_boxes(image, boxes, labels=None, prompt=None, *, device=None, 
     return _process_sam3_result(result, height, width, threshold)
 
 
-def segment_video(video, prompt, *, device=None, model_path=None,
-                  num_frames=None, max_frames_to_track=None):
+def segment_video(video, prompt, *, device=None, model_path=None):
     """
     Segment and track all instances of a concept throughout a video.
 
@@ -548,8 +544,6 @@ def segment_video(video, prompt, *, device=None, model_path=None,
             - str: Device string (e.g., 'cuda:0', 'cuda:1')
             - list/set: Multiple GPUs (e.g., [0, 1, 2] or {4, 5, 6})
         model_path: Model path to use a specific SAM3 model
-        num_frames: Number of frames to process. If None, processes all frames.
-        max_frames_to_track: Maximum frames to track. If None, tracks all frames.
 
     Returns:
         np.ndarray: Boolean mask array of shape (T, H, W) where T is number of frames.
@@ -561,7 +555,7 @@ def segment_video(video, prompt, *, device=None, model_path=None,
     import torch
 
     # Load video as list of PIL images (in-memory, no disk I/O)
-    frames = _load_video(video, num_frames)
+    frames = _load_video(video)
 
     if len(frames) == 0:
         return np.zeros((0, 0, 0), dtype=bool)
@@ -586,11 +580,7 @@ def segment_video(video, prompt, *, device=None, model_path=None,
 
     # Propagate through video
     combined_masks = []
-
-    if max_frames_to_track is None:
-        max_frames_to_track = len(frames)
-
-    num_frames_to_process = min(max_frames_to_track, len(frames))
+    num_frames_to_process = len(frames)
 
     # Propagate through all frames - returns a generator
     propagation = video_predictor.handle_stream_request(
