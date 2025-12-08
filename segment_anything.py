@@ -612,20 +612,11 @@ def segment_video(video, prompt, *, device=None, model_path=None, threshold=0.5)
             all_frame_masks.append(np.zeros((0, height, width), dtype=bool))
 
     # Pad all frames to same number of objects (max across all frames)
-    max_objects = max(m.shape[0] for m in all_frame_masks) if all_frame_masks else 0
-    if max_objects == 0:
-        masks_tnhw = np.zeros((len(frames), 0, height, width), dtype=bool)
-    else:
-        padded = []
-        for m in all_frame_masks:
-            if m.shape[0] < max_objects:
-                pad = np.zeros((max_objects - m.shape[0], height, width), dtype=bool)
-                m = np.concatenate([m, pad], axis=0)
-            padded.append(m)
-        masks_tnhw = np.stack(padded, axis=0)
+    max_objects = max((m.shape[0] for m in all_frame_masks), default=0)
+    masks_tnhw = np.stack([rp.crop_tensor(m, (max_objects, height, width)) for m in all_frame_masks])
 
     # Combined mask per frame: THW
-    mask_thw = np.any(masks_tnhw, axis=1) if max_objects > 0 else np.zeros((len(frames), height, width), dtype=bool)
+    mask_thw = np.any(masks_tnhw, axis=1)
 
     return rp.EasyDict(
         mask=mask_thw,
