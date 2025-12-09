@@ -548,7 +548,7 @@ def demo(image=None, output="/tmp/da3_demo.jpg", device=None, variant="small"):
     print(f"Depth map shape: {depth.shape}")
     print(f"Depth range: {depth.min():.3f} to {depth.max():.3f}")
 
-    depth_colored = rp.apply_colormap(depth, 'turbo')
+    depth_colored = rp.apply_colormap_to_image(depth, 'turbo')
     comparison = rp.horizontally_concatenated_images([
         rp.labeled_image(img, "Input Image"),
         rp.labeled_image(depth_colored, "Depth Map"),
