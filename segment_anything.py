@@ -74,6 +74,19 @@ WEIGHTS_FILE = "sam3.pt"
 # Default model path (set to override HuggingFace cache)
 default_model_path = None
 
+def _to_numpy(x, empty_shape=(0,)):
+    """Convert tensor/list to numpy array."""
+    import numpy as np
+    rp.pip_import("torch")
+    import torch
+
+    if isinstance(x, torch.Tensor):
+        return x.cpu().float().numpy()
+    if isinstance(x, list) and len(x) > 0 and isinstance(x[0], torch.Tensor):
+        return torch.stack(x).cpu().float().numpy()
+    if isinstance(x, list) and len(x) > 0:
+        return np.array(x)
+    return np.zeros(empty_shape)
 
 def download_model(path=None, force=False):
     """
@@ -298,9 +311,9 @@ def _empty_result(height, width):
 
 def _process_sam3_result(result, height, width, threshold):
     """Convert SAM3 result dict to SegmentResult EasyDict."""
-    masks = rp.as_numpy_array(result.get("masks", []), (0, height, width))
-    boxes = rp.as_numpy_array(result.get("boxes", []), (0, 4))
-    scores = rp.as_numpy_array(result.get("scores", []))
+    masks = _to_numpy(result.get("masks", []), (0, height, width))
+    boxes = _to_numpy(result.get("boxes", []), (0, 4))
+    scores = _to_numpy(result.get("scores", []))
 
     # Filter by threshold
     if len(scores) > 0:
