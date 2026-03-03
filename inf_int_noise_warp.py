@@ -13,9 +13,17 @@
 """
 Infinite-Resolution Integral Noise Warping (ICLR 2025)
 
+Implements the particle-based variant (Algorithm 3) from the paper. The paper
+also describes a grid-based variant (Algorithm 2) that models deformed pixel
+regions as octagons — that variant is not implemented here because it breaks
+with non-diffeomorphic (non-injective) deformation maps. The particle-based
+approach treats pixels as particles distributed to grid cells via bilinear
+weighting kernels, making it agnostic to non-injective maps and ~42x faster
+on GPU.
+
 Warps Gaussian white noise through optical flow fields while preserving
-spatial uncorrelation. Uses Taichi for GPU/CPU compute with Brownian bridge
-stochastic sampling.
+spatial uncorrelation via Brownian bridge stochastic sampling. Uses Taichi
+for GPU/CPU compute.
 
 Public API:
     warp_noise(init_noise, flows)        -> generator of [H, W, C] noise arrays
@@ -26,6 +34,7 @@ Public API:
 Reference:
     Deng et al., "Infinite-Resolution Integral Noise Warping for Diffusion Models", ICLR 2025
     https://openreview.net/forum?id=Y6LPWBo2HP
+    https://github.com/yitongdeng-projects/infinite_resolution_integral_noise_warping_code
 
 Examples:
     >>> import numpy as np
@@ -474,8 +483,10 @@ def warp_noise(init_noise, flows):
     """
     Warp noise through a sequence of optical flow fields.
 
+    Uses the particle-based warping algorithm (Algorithm 3 from the paper):
+    bilinear backward mapping with Brownian bridge stochastic sampling.
     Each output frame is spatially-uncorrelated white Gaussian noise whose
-    motion matches the input flows, via Brownian bridge sampling.
+    motion matches the input flows.
 
     Both inputs and outputs are generators/iterables, so flows are consumed
     one at a time — avoiding storing a full [T, H, W, 2] flow tensor in RAM.
