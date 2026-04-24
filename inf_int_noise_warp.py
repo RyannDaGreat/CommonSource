@@ -71,13 +71,13 @@ def _ensure_taichi_init():
     import taichi as ti
 
     if platform.system() == "Darwin":
-        ti.init(arch=ti.cpu, debug=False, default_fp=ti.f64, random_seed=0)
+        ti.init(arch=ti.cpu, debug=False, default_fp=ti.f32, random_seed=0)
     else:
         ti.init(
             arch=ti.gpu,
             device_memory_GB=4.0,
             debug=False,
-            default_fp=ti.f64,
+            default_fp=ti.f32,
             random_seed=0,
         )
     _taichi_initialized = True
@@ -88,6 +88,7 @@ def _ensure_taichi_init():
 # ---------------------------------------------------------------------------
 
 _EPS = 1.0e-6
+_MAX_TICKETS = 24  # Max bilinear tickets per pixel (~4 avg, ~15 max observed)
 
 
 def _define_taichi_kernels():
@@ -169,49 +170,56 @@ def _define_taichi_kernels():
                 w = (1.0 - frac.x) * (1.0 - frac.y)
                 if w > 0.0:
                     t = ti.atomic_add(ticket_serial_field[lower_x, lower_y], 1)
-                    master_field[lower_x, lower_y, t] = raveled_index
-                    area_field[lower_x, lower_y, t] = w
+                    if t < _MAX_TICKETS:
+                        master_field[lower_x, lower_y, t] = raveled_index
+                        area_field[lower_x, lower_y, t] = w
 
             if _is_in_bound(upper_x, upper_y, img_n, img_m):
                 w = frac.x * frac.y
                 if w > 0.0:
                     t = ti.atomic_add(ticket_serial_field[upper_x, upper_y], 1)
-                    master_field[upper_x, upper_y, t] = raveled_index
-                    area_field[upper_x, upper_y, t] = w
+                    if t < _MAX_TICKETS:
+                        master_field[upper_x, upper_y, t] = raveled_index
+                        area_field[upper_x, upper_y, t] = w
 
             if _is_in_bound(lower_x, upper_y, img_n, img_m):
                 w = (1.0 - frac.x) * frac.y
                 if w > 0.0:
                     t = ti.atomic_add(ticket_serial_field[lower_x, upper_y], 1)
-                    master_field[lower_x, upper_y, t] = raveled_index
-                    area_field[lower_x, upper_y, t] = w
+                    if t < _MAX_TICKETS:
+                        master_field[lower_x, upper_y, t] = raveled_index
+                        area_field[lower_x, upper_y, t] = w
 
             if _is_in_bound(upper_x, lower_y, img_n, img_m):
                 w = frac.x * (1.0 - frac.y)
                 if w > 0.0:
                     t = ti.atomic_add(ticket_serial_field[upper_x, lower_y], 1)
-                    master_field[upper_x, lower_y, t] = raveled_index
-                    area_field[upper_x, lower_y, t] = w
+                    if t < _MAX_TICKETS:
+                        master_field[upper_x, lower_y, t] = raveled_index
+                        area_field[upper_x, lower_y, t] = w
 
         # Phase 3: Brownian bridge sample + scatter back to source pixels
         for u, v in noise_field:
             total_request = 0.0
             k_idx = 0
-            access_record = area_field[u, v, k_idx]
-            while access_record > 0.0:
-                total_request += access_record
+            while k_idx < _MAX_TICKETS:
+                ar = area_field[u, v, k_idx]
+                if ar <= 0.0:
+                    break
+                total_request += ar
                 k_idx += 1
-                access_record = area_field[u, v, k_idx]
 
             if total_request > 0.0:
                 k_idx = 0
-                access_record = area_field[u, v, k_idx]
-                access_source = master_field[u, v, k_idx]
                 past_range = 0.0
                 past_value = ti.Vector(
                     [0.0 for _ in ti.static(range(noise_field.n))]
                 )
-                while access_record > 0.0:
+                while k_idx < _MAX_TICKETS:
+                    access_record = area_field[u, v, k_idx]
+                    if access_record <= 0.0:
+                        break
+                    access_source = master_field[u, v, k_idx]
                     curr_normalized_request = access_record / total_request
                     source_i, source_j = _unravel_index(
                         access_source, img_n, img_m
@@ -229,8 +237,6 @@ def _define_taichi_kernels():
                     )
                     area_field[u, v, k_idx] *= 0
                     k_idx += 1
-                    access_record = area_field[u, v, k_idx]
-                    access_source = master_field[u, v, k_idx]
 
         # Phase 4: normalize — preserve variance; unassigned pixels get fresh noise
         for i, j in noise_field:
@@ -287,33 +293,12 @@ class _ParticleWarper:
         self._particle_warp_kernel = kernels["particle_warp_kernel"]
         self._np_dtype = np.float32 if fp == ti.f32 else np.float64
 
-        self.master_field = ti.field(ti.i32)
-        self.area_field = ti.field(fp)
-        dense_size = 8
-        max_entries = 10000
-
-        dims = (
-            math.ceil(im_height / dense_size),
-            math.ceil(im_width / dense_size),
-            math.ceil(max_entries / dense_size),
+        self.master_field = ti.field(
+            ti.i32, shape=(im_height, im_width, _MAX_TICKETS)
         )
-        try:
-            block = ti.root.pointer(ti.ijk, dims)
-        except RuntimeError:
-            max_entries = 512
-            dims = (
-                math.ceil(im_height / dense_size),
-                math.ceil(im_width / dense_size),
-                math.ceil(max_entries / dense_size),
-            )
-            print(
-                "Sparse SNodes not supported; using dense layout"
-                " (max_entries=%d)" % max_entries
-            )
-            block = ti.root.dense(ti.ijk, dims)
-
-        pixel = block.dense(ti.ijk, (dense_size, dense_size, dense_size))
-        pixel.place(self.master_field, self.area_field)
+        self.area_field = ti.field(
+            fp, shape=(im_height, im_width, _MAX_TICKETS)
+        )
 
         self.noise_field = ti.Vector.field(
             num_noise_channel, fp, shape=(im_height, im_width)
@@ -375,7 +360,7 @@ def _make_warper(H, W, C):
         np.arange(H) + 0.5, np.arange(W) + 0.5, indexing="ij"
     )
     identity_cc = np.stack((ii, jj), axis=-1)  # [H, W, 2] (row, col)
-    warper = _ParticleWarper(H, W, C, fp=ti.f64)
+    warper = _ParticleWarper(H, W, C, fp=ti.f32)
     return warper, identity_cc
 
 
