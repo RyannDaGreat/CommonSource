@@ -237,10 +237,25 @@ class _EllipsePlugin(_ShapePlugin):
         }
 
     def draw(self, frame, frame_width, frame_height):
-        h = self.hyperparameters
-        axes = (max(1, int(h["width"] / 2)), max(1, int(h["height"] / 2)))
-        cv2.ellipse(frame, (int(h["center_x"]), int(h["center_y"])),
-                    axes, int(h["angle"]), 0, 360, 255, -1)
+        # Animation deltas can drive width/height negative; OpenCV's ellipse
+        # asserts axes >= 0, so clamp them to a valid range.
+        axes = (
+            max(0, int(self.hyperparameters["width"] / 2)),
+            max(0, int(self.hyperparameters["height"] / 2)),
+        )
+        cv2.ellipse(
+            frame,
+            (
+                int(self.hyperparameters["center_x"]),
+                int(self.hyperparameters["center_y"]),
+            ),
+            axes,
+            int(self.hyperparameters["angle"]),
+            0,
+            360,
+            (255, 255, 255),
+            -1,
+        )
         return frame
 
     def randomize_hyperparameters(self, frame_width, frame_height):
